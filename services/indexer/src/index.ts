@@ -33,6 +33,8 @@ import { createApp } from "./api";
 import { createDomainProcessor } from "./domain-processor";
 import { PostgresDatabase } from "./postgres-db";
 import { ScoreRefreshService } from "./score-refresh";
+import { GracefulShutdown } from "./graceful-shutdown";
+import { logger } from "./logger";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -56,6 +58,7 @@ const SCORE_REFRESH_INTERVAL_MINUTES = parseInt(
   process.env.SCORE_REFRESH_INTERVAL_MINUTES ?? "5",
   10
 );
+const SHUTDOWN_TIMEOUT_MS = parseInt(process.env.SHUTDOWN_TIMEOUT_MS ?? "30000", 10);
 
 // ── Database ──────────────────────────────────────────────────────────────────
 
@@ -184,42 +187,43 @@ function toIngestEvent(event: RawEvent): IngestEvent {
   };
 }
 
-// ── HTTP + WebSocket server ──────────────────────────────────────────────────
+// ── Graceful shutdown ────────────────────────────────────────────────────────
 
-const apiApp = createApp(new PostgresDatabase(pgPool), pgPool);
+const abortController = new AbortController();
+const shutdownFlag = { active: false };
+
+const apiApp = createApp(new PostgresDatabase(pgPool), pgPool, {
+  isShuttingDown: () => shutdownFlag.active,
+});
 const httpServer = http.createServer(apiApp);
 
 const wsHandle = attachWebSocketServer(httpServer, bus, { path: "/ws" });
 const detachNotificationDispatcher = attachNotificationDispatcher(bus, pgPool, notificationService);
 
-// ── Lifecycle control ────────────────────────────────────────────────────────
+const gracefulShutdown = new GracefulShutdown({
+  httpServer,
+  pgPool,
+  wsHandle,
+  abortController,
+  scoreRefreshStop: () => scoreRefreshService.stop(),
+  detachNotificationDispatcher,
+  shutdownTimeoutMs: SHUTDOWN_TIMEOUT_MS,
+  shutdownFlag,
+  onSignal: (signal) => {
+    logger.info({ signal }, "Received shutdown signal");
+  },
+});
 
-const abortController = new AbortController();
-let shuttingDown = false;
-
-async function shutdown(signal: string): Promise<void> {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  console.log(`[indexer] Received ${signal}, shutting down…`);
-  abortController.abort();
-  scoreRefreshService.stop();
-  detachNotificationDispatcher();
-  await wsHandle.close();
-  httpServer.close();
-  await pgPool.end();
-  console.log("[indexer] Shutdown complete.");
-}
-
-process.on("SIGTERM", () => void shutdown("SIGTERM"));
-process.on("SIGINT", () => void shutdown("SIGINT"));
+gracefulShutdown.registerSignals();
 
 // ── Core runner ──────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  console.log("[indexer] Starting Linkora indexer");
-  console.log(`[indexer] RPC:        ${STELLAR_RPC_URL}`);
-  console.log(`[indexer] Contract:   ${CONTRACT_ID}`);
-  console.log(`[indexer] From ledger: ${START_LEDGER}`);
+  logger.info("Starting Linkora indexer");
+  logger.info(
+    { rpcUrl: STELLAR_RPC_URL, contractId: CONTRACT_ID, startLedger: START_LEDGER },
+    "Config"
+  );
 
   await ensureSchema();
 
@@ -255,8 +259,9 @@ async function main(): Promise<void> {
         const rpcJson = (await rpcRes.json()) as { result?: { sequence: number } };
         const currentLedger = rpcJson.result?.sequence ?? 0;
         if (currentLedger > initialCursor + 1) {
-          console.log(
-            `[indexer] Startup gap detected: processed=${initialCursor}, current=${currentLedger}. Backfilling…`
+          logger.info(
+            { processedCursor: initialCursor, currentLedger },
+            "Startup gap detected, backfilling"
           );
           await backfillStartupGap(
             { rpcUrl: STELLAR_RPC_URL, contractId: CONTRACT_ID },
@@ -268,12 +273,12 @@ async function main(): Promise<void> {
         }
       }
     } catch (err) {
-      console.warn("[indexer] Startup gap check failed (continuing):", err);
+      logger.warn({ err }, "Startup gap check failed (continuing)");
     }
   }
 
   httpServer.listen(PORT, () => {
-    console.log(`[indexer] HTTP + WS listening on :${PORT} (ws path /ws)`);
+    logger.info({ port: PORT, wsPath: "/ws" }, "HTTP + WS listening");
   });
 
   // Start score refresh service
@@ -281,7 +286,7 @@ async function main(): Promise<void> {
 
   // Start gossip in the background.
   startGossip(pgPool, abortController.signal).catch((err) =>
-    console.error("[gossip] Fatal error:", err)
+    logger.error({ err }, "Gossip fatal error")
   );
 
   await streamEvents(
@@ -298,14 +303,11 @@ async function main(): Promise<void> {
     abortController.signal
   );
 
-  await wsHandle.close();
-  detachNotificationDispatcher();
-  httpServer.close();
-  await pgPool.end();
-  console.log("[indexer] Shutdown complete.");
+  logger.info("Event stream ended, initiating shutdown");
+  await gracefulShutdown.shutdown("stream_end");
 }
 
 main().catch((err) => {
-  console.error("[indexer] Fatal error:", err);
+  logger.error({ err }, "Fatal error");
   process.exit(1);
 });
