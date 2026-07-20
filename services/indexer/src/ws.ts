@@ -34,7 +34,7 @@ export interface WsHandle {
   /** Number of currently connected clients. */
   clientCount(): number;
   /** Stop heartbeats, unsubscribe from the bus, and close all sockets. */
-  close(): Promise<void>;
+  close(drainTimeoutMs?: number): Promise<void>;
 }
 
 const DEFAULT_HEARTBEAT_MS = 15_000;
@@ -103,15 +103,29 @@ export function attachWebSocketServer(
   return {
     wss,
     clientCount: () => clients.size,
-    close: () =>
+    close: (drainTimeoutMs?: number) =>
       new Promise<void>((resolve) => {
         clearInterval(heartbeat);
         unsubscribe();
+
         for (const ws of clients.keys()) {
           ws.close(1001, "server shutting down");
         }
-        clients.clear();
-        wss.close(() => resolve());
+
+        const done = () => {
+          clients.clear();
+          wss.close(() => resolve());
+        };
+
+        if (drainTimeoutMs && clients.size > 0) {
+          const timer = setTimeout(done, drainTimeoutMs);
+          wss.on("close", () => {
+            clearTimeout(timer);
+            done();
+          });
+        } else {
+          done();
+        }
       }),
   };
 }

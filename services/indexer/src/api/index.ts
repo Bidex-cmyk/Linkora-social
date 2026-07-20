@@ -2,7 +2,7 @@ import express, { Request, Response, NextFunction } from "express";
 import { Pool as PgPool } from "pg";
 import { Database } from "../db";
 import { logger } from "../logger";
-import { rateLimitWrite } from "../middleware/rateLimit";
+import { rateLimit, rateLimitWrite } from "../middleware/rateLimit";
 import { requireStellarAuth } from "../middleware/stellarAuth";
 import { createProfilesRouter } from "./routes/profiles";
 import { createPostsRouter } from "./routes/posts";
@@ -20,6 +20,10 @@ import {
   PostgresDeviceTokenStore,
 } from "../notifications/service";
 import { PostgresDatabase } from "../postgres-db";
+
+export interface ShutdownState {
+  isShuttingDown: () => boolean;
+}
 
 // ── CORS middleware ───────────────────────────────────────────────────────────
 
@@ -50,7 +54,11 @@ function corsMiddleware(req: Request, res: Response, next: NextFunction): void {
 
 // ── App factory ───────────────────────────────────────────────────────────────
 
-export function createApp(db: Database, pg?: PgPool): express.Application {
+export function createApp(
+  db: Database,
+  pg?: PgPool,
+  shutdownState?: ShutdownState
+): express.Application {
   const app = express();
   app.use(express.json());
   app.use(corsMiddleware);
@@ -59,9 +67,29 @@ export function createApp(db: Database, pg?: PgPool): express.Application {
   const version = process.env.npm_package_version ?? "0.1.0";
   const commit = process.env.COMMIT_SHA ?? "unknown";
 
+  // ── Shutdown-aware middleware ──────────────────────────────────────────────
+
+  app.use((_req: Request, res: Response, next: NextFunction): void => {
+    if (shutdownState?.isShuttingDown()) {
+      res.status(503).json({ error: "Service shutting down", code: "SHUTTING_DOWN" });
+      return;
+    }
+    next();
+  });
+
   // ── Health endpoints ───────────────────────────────────────────────────────
 
   app.get("/health", async (_req: Request, res: Response): Promise<void> => {
+    if (shutdownState?.isShuttingDown()) {
+      res.status(503).json({
+        status: "shutting_down",
+        uptime: Math.floor((Date.now() - startTime) / 1000),
+        version,
+        commit,
+      });
+      return;
+    }
+
     const uptime = Math.floor((Date.now() - startTime) / 1000);
     const backfill = getBackfillState();
 
@@ -111,6 +139,10 @@ export function createApp(db: Database, pg?: PgPool): express.Application {
 
   // Readiness: ready to serve traffic (DB + RPC up)
   app.get("/health/ready", async (_req: Request, res: Response): Promise<void> => {
+    if (shutdownState?.isShuttingDown()) {
+      res.status(503).json({ status: "not ready", reason: "shutting down" });
+      return;
+    }
     try {
       if (pg) await pg.query("SELECT 1");
       res.json({ status: "ready" });
@@ -121,6 +153,10 @@ export function createApp(db: Database, pg?: PgPool): express.Application {
 
   // Liveness: process is alive
   app.get("/health/live", (_req: Request, res: Response): void => {
+    if (shutdownState?.isShuttingDown()) {
+      res.status(503).json({ status: "shutting down" });
+      return;
+    }
     res.json({ status: "live" });
   });
 
