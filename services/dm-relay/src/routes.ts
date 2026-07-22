@@ -16,6 +16,7 @@ import {
 import { createConversationId, sanitizeError } from "./utils";
 import { ZodError } from "zod";
 import { StrKey } from "@stellar/stellar-sdk";
+import { idempotencyMiddleware } from "./middleware/idempotency";
 
 // ── WebSocket client registry (address → set of sockets) ─────────────────────
 
@@ -73,7 +74,7 @@ export function createRouter(database: Database, _authService: AuthService): Rou
   /**
    * POST /messages - Submit an encrypted message
    */
-  router.post("/messages", async (req: Request, res: Response) => {
+  router.post("/messages", idempotencyMiddleware(database), async (req: Request, res: Response) => {
     try {
       const messageData = SendMessageSchema.parse(req.body);
 

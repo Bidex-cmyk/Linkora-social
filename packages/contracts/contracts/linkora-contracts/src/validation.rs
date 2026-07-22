@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 use alloc::format;
-use soroban_sdk::{Address, Env, String, Vec};
+use soroban_sdk::{Address, BytesN, Env, String, Vec};
 
 use crate::{GovParameter, ReportStatus};
 
@@ -102,6 +102,18 @@ pub fn validate_gov_parameter(env: &Env, parameter: &GovParameter) {
         | GovParameter::ModerationSlashBps => {}
     }
     let _ = env;
+}
+
+/// Reject the obviously-invalid all-zero signature before it ever reaches the
+/// crypto host function, so a missing/uninitialized signature fails with a
+/// descriptive message rather than an opaque crypto error.
+pub fn validate_signature(env: &Env, label: &str, signature: &BytesN<64>) {
+    let zero = BytesN::from_array(env, &[0u8; 64]);
+    require_with_error!(
+        env,
+        signature != &zero,
+        format!("{label} must not be an all-zero signature")
+    );
 }
 
 pub fn validate_report_verdict(env: &Env, verdict: &ReportStatus) {

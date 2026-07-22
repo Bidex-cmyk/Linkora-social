@@ -33,8 +33,7 @@ import { createApp } from "./api";
 import { createDomainProcessor } from "./domain-processor";
 import { PostgresDatabase } from "./postgres-db";
 import { ScoreRefreshService } from "./score-refresh";
-import { GracefulShutdown } from "./graceful-shutdown";
-import { logger } from "./logger";
+import { HealthMonitor } from "./services/health-monitor";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -189,30 +188,31 @@ function toIngestEvent(event: RawEvent): IngestEvent {
 
 // ── Graceful shutdown ────────────────────────────────────────────────────────
 
-const abortController = new AbortController();
-const shutdownFlag = { active: false };
-
-const apiApp = createApp(new PostgresDatabase(pgPool), pgPool, {
-  isShuttingDown: () => shutdownFlag.active,
-});
+const healthMonitor = new HealthMonitor(pgPool, STELLAR_RPC_URL);
+const apiApp = createApp(new PostgresDatabase(pgPool), pgPool, healthMonitor);
 const httpServer = http.createServer(apiApp);
 
 const wsHandle = attachWebSocketServer(httpServer, bus, { path: "/ws" });
 const detachNotificationDispatcher = attachNotificationDispatcher(bus, pgPool, notificationService);
 
-const gracefulShutdown = new GracefulShutdown({
-  httpServer,
-  pgPool,
-  wsHandle,
-  abortController,
-  scoreRefreshStop: () => scoreRefreshService.stop(),
-  detachNotificationDispatcher,
-  shutdownTimeoutMs: SHUTDOWN_TIMEOUT_MS,
-  shutdownFlag,
-  onSignal: (signal) => {
-    logger.info({ signal }, "Received shutdown signal");
-  },
-});
+// ── Lifecycle control ────────────────────────────────────────────────────────
+
+const abortController = new AbortController();
+let shuttingDown = false;
+
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[indexer] Received ${signal}, shutting down…`);
+  healthMonitor.markShuttingDown();
+  abortController.abort();
+  scoreRefreshService.stop();
+  detachNotificationDispatcher();
+  await wsHandle.close();
+  httpServer.close();
+  await pgPool.end();
+  console.log("[indexer] Shutdown complete.");
+}
 
 gracefulShutdown.registerSignals();
 
@@ -239,6 +239,7 @@ async function main(): Promise<void> {
 
   const processBatch: BatchProcessor = async (events) => {
     const result = await pipeline.processBatch(events.map(toIngestEvent));
+    if (events.length > 0) healthMonitor.recordEvent();
     return result.cursor;
   };
 
@@ -278,7 +279,8 @@ async function main(): Promise<void> {
   }
 
   httpServer.listen(PORT, () => {
-    logger.info({ port: PORT, wsPath: "/ws" }, "HTTP + WS listening");
+    console.log(`[indexer] HTTP + WS listening on :${PORT} (ws path /ws)`);
+    healthMonitor.markStarted();
   });
 
   // Start score refresh service

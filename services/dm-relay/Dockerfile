@@ -10,9 +10,9 @@ RUN npm ci --omit=dev
 COPY . .
 RUN npm run build
 
-EXPOSE 3000
+EXPOSE 3001
 
 HEALTHCHECK --interval=10s --timeout=5s --retries=3 --start-period=30s \
-  CMD curl -f http://localhost:3000/health/ready || exit 1
+  CMD curl -f http://localhost:3001/health/ready || exit 1
 
-CMD ["node", "dist/index.js"]
+CMD ["node", "dist/server.js"]

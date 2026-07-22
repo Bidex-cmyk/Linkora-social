@@ -12,6 +12,7 @@ import { createStateRootRouter } from "./routes/stateRoot";
 import { createNotificationsRouter } from "./routes/notifications";
 import { createGovernanceRouter } from "./routes/governance";
 import { createUsersRouter } from "./routes/users";
+import { createFeedRouter } from "./routes/feed";
 import { isFenced } from "../gossip";
 import { getBackfillState } from "../stream";
 import {
@@ -20,6 +21,7 @@ import {
   PostgresDeviceTokenStore,
 } from "../notifications/service";
 import { PostgresDatabase } from "../postgres-db";
+import { HealthMonitor } from "../services/health-monitor";
 
 export interface ShutdownState {
   isShuttingDown: () => boolean;
@@ -57,7 +59,7 @@ function corsMiddleware(req: Request, res: Response, next: NextFunction): void {
 export function createApp(
   db: Database,
   pg?: PgPool,
-  shutdownState?: ShutdownState
+  healthMonitor?: HealthMonitor
 ): express.Application {
   const app = express();
   app.use(express.json());
@@ -66,6 +68,8 @@ export function createApp(
   const startTime = Date.now();
   const version = process.env.npm_package_version ?? "0.1.0";
   const commit = process.env.COMMIT_SHA ?? "unknown";
+  const monitor =
+    healthMonitor ?? (pg ? new HealthMonitor(pg, process.env.STELLAR_RPC_URL ?? "") : undefined);
 
   // ── Shutdown-aware middleware ──────────────────────────────────────────────
 
@@ -92,72 +96,48 @@ export function createApp(
 
     const uptime = Math.floor((Date.now() - startTime) / 1000);
     const backfill = getBackfillState();
+    const readiness = monitor
+      ? await monitor.checkReadiness()
+      : { ready: false, checks: undefined };
 
-    // DB check
-    let dbStatus = "disconnected";
-    try {
-      if (pg) {
-        await pg.query("SELECT 1");
-        dbStatus = "connected";
-      }
-    } catch {
-      /* keep disconnected */
-    }
-
-    // RPC check
-    let rpcStatus = "unreachable";
-    try {
-      const rpcUrl = process.env.STELLAR_RPC_URL;
-      if (rpcUrl) {
-        const ctrl = new AbortController();
-        const t = setTimeout(() => ctrl.abort(), 3000);
-        await fetch(`${rpcUrl}`, {
-          method: "POST",
-          signal: ctrl.signal,
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getLatestLedger", params: [] }),
-        }).finally(() => clearTimeout(t));
-        rpcStatus = "reachable";
-      }
-    } catch {
-      /* keep unreachable */
-    }
-
-    const ok = dbStatus === "connected" && rpcStatus === "reachable";
-    res.status(ok ? 200 : 503).json({
-      status: ok ? "ok" : "degraded",
+    res.status(readiness.ready ? 200 : 503).json({
+      status: readiness.ready ? "ok" : "degraded",
       uptime,
       version,
       commit,
-      db: dbStatus,
-      rpc: rpcStatus,
+      checks: readiness.checks,
       backfill: backfill.active
         ? { active: true, fromLedger: backfill.fromLedger, toLedger: backfill.toLedger }
         : { active: false },
     });
   });
 
-  // Readiness: ready to serve traffic (DB + RPC up)
-  app.get("/health/ready", async (_req: Request, res: Response): Promise<void> => {
-    if (shutdownState?.isShuttingDown()) {
-      res.status(503).json({ status: "not ready", reason: "shutting down" });
-      return;
-    }
-    try {
-      if (pg) await pg.query("SELECT 1");
-      res.json({ status: "ready" });
-    } catch {
-      res.status(503).json({ status: "not ready", reason: "db unavailable" });
-    }
+  // Liveness probe — always 200 while the process is running.
+  app.get("/health/live", (_req: Request, res: Response): void => {
+    const uptime = Math.floor((Date.now() - startTime) / 1000);
+    res.json({ status: "alive", uptime });
   });
 
-  // Liveness: process is alive
-  app.get("/health/live", (_req: Request, res: Response): void => {
-    if (shutdownState?.isShuttingDown()) {
-      res.status(503).json({ status: "shutting down" });
+  // Readiness probe — 200 when DB, Stellar RPC, and event stream are healthy.
+  app.get("/health/ready", async (_req: Request, res: Response): Promise<void> => {
+    if (!monitor) {
+      res.status(503).json({ status: "not_ready", reason: "health monitor unavailable" });
       return;
     }
-    res.json({ status: "live" });
+    const readiness = await monitor.checkReadiness();
+    res.status(readiness.ready ? 200 : 503).json({
+      status: readiness.ready ? "ready" : "not_ready",
+      checks: readiness.checks,
+    });
+  });
+
+  // Startup probe — 200 only once initial bootstrap has completed.
+  app.get("/health/startup", (_req: Request, res: Response): void => {
+    if (monitor?.isStarted()) {
+      res.json({ status: "started", startedAt: monitor.getStartedAt() });
+    } else {
+      res.status(503).json({ status: "starting" });
+    }
   });
 
   // Apply rate limiting to all /api routes.

@@ -7,8 +7,8 @@
  */
 
 import { NextFunction, Request, Response } from "express";
-import { AuthService, AuthError } from "./auth";
-import { SendMessageSchema } from "./validation";
+import { AuthService, AuthError } from "../auth";
+import { SendMessageSchema } from "../validation";
 import { ZodError } from "zod";
 
 export function messageAuthMiddleware(authService: AuthService) {

@@ -14,7 +14,7 @@ mod validation;
 use validation::{
     validate_address_list, validate_amount, validate_content, validate_gov_parameter,
     validate_non_default_address, validate_protocol_fee, validate_report_verdict,
-    validate_u32_range, validate_username, MAX_FEE_BPS, MAX_QUORUM,
+    validate_signature, validate_u32_range, validate_username, MAX_FEE_BPS, MAX_QUORUM,
 };
 
 // ── Storage Key Enum ──────────────────────────────────────────────────────────
@@ -44,6 +44,7 @@ pub enum StorageKey {
     DmPublicKey(Address),           // persistent: user -> X25519 public key for encrypted DMs
     CredentialRoot(Address),        // persistent: user -> credential Merkle root
     NullifierSet(Address, BytesN<32>), // persistent: (user, nullifier) -> bool (prevents replay)
+    CredentialAuthority, // persistent: Ed25519 pubkey trusted to sign credential root updates
     // ── Governance ────────────────────────────────────────────────────────
     GovProposal(u64),      // persistent: proposal_id -> GovProposal
     GovVote(u64, Address), // persistent: (proposal_id, voter) -> bool (prevents double-voting)
@@ -891,6 +892,18 @@ impl LinkoraContract {
 
     // ── DM Key Management ─────────────────────────────────────────────────────
 
+    /// Register or rotate the trusted Ed25519 authority key that signs credential
+    /// root updates. Admin only.
+    pub fn set_credential_authority(env: Env, admin: Address, pubkey: BytesN<32>) {
+        Self::bump_instance(&env);
+        admin.require_auth();
+        validate_non_default_address(&env, "admin", &admin);
+        Self::require_role(&env, &admin, Role::Admin);
+        let key = StorageKey::CredentialAuthority;
+        env.storage().persistent().set(&key, &pubkey);
+        Self::bump(&env, &key);
+    }
+
     pub fn update_credential_root(
         env: Env,
         user: Address,
@@ -900,9 +913,20 @@ impl LinkoraContract {
         Self::bump_instance(&env);
         user.require_auth();
         validate_non_default_address(&env, "user", &user);
+        validate_signature(&env, "signature", &signature);
 
-        let _message_hash = Self::credential_root_message_hash(&env, &new_root);
-        let _signature = signature;
+        let authority_key = StorageKey::CredentialAuthority;
+        let authority_pubkey: BytesN<32> = env
+            .storage()
+            .persistent()
+            .get(&authority_key)
+            .expect("credential authority not set");
+        Self::bump(&env, &authority_key);
+
+        // Verify Ed25519 signature: ed25519_verify(pubkey, message, signature).
+        let message_hash = Self::credential_root_message_hash(&env, &new_root);
+        env.crypto()
+            .ed25519_verify(&authority_pubkey, &message_hash.into(), &signature);
 
         let key = StorageKey::CredentialRoot(user.clone());
         env.storage().persistent().set(&key, &new_root);
@@ -1008,6 +1032,12 @@ impl LinkoraContract {
         Self::require_not_paused(&env);
 
         if Self::is_blocked(env.clone(), followee.clone(), follower.clone()) {
+            panic!("blocked");
+        }
+        if Self::is_blocked(env.clone(), follower.clone(), followee.clone()) {
+            panic!("blocked");
+        }
+        if Self::is_blocked(env.clone(), follower.clone(), followee.clone()) {
             panic!("blocked");
         }
 
@@ -1311,6 +1341,13 @@ impl LinkoraContract {
         blocks.set(blocked.clone(), ());
         env.storage().persistent().set(&key, &blocks);
         Self::bump(&env, &key);
+
+        // Clean up follow relationships between blocker and blocked
+        Self::cleanup_follow_on_block(&env, &blocker, &blocked);
+
+        // Clean up like entries between blocker and blocked
+        Self::cleanup_likes_on_block(&env, &blocker, &blocked);
+
         BlockEvent { blocker, blocked }.publish(&env);
     }
 
@@ -1475,11 +1512,20 @@ impl LinkoraContract {
         }
 
         let post_key = StorageKey::Post(post_id);
-        let mut post: Post = env
+        let post: Post = env
             .storage()
             .persistent()
             .get(&post_key)
             .expect("post not found");
+
+        if Self::is_blocked(env.clone(), post.author.clone(), user.clone()) {
+            panic!("blocked");
+        }
+        if Self::is_blocked(env.clone(), user.clone(), post.author.clone()) {
+            panic!("blocked");
+        }
+
+        let mut post = post;
         post.like_count += 1;
         env.storage().persistent().set(&post_key, &post);
         Self::bump(&env, &post_key);
@@ -1518,6 +1564,12 @@ impl LinkoraContract {
         });
 
         if Self::is_blocked(env.clone(), post.author.clone(), tipper.clone()) {
+            panic!("blocked");
+        }
+        if Self::is_blocked(env.clone(), tipper.clone(), post.author.clone()) {
+            panic!("blocked");
+        }
+        if Self::is_blocked(env.clone(), tipper.clone(), post.author.clone()) {
             panic!("blocked");
         }
 
@@ -2320,6 +2372,15 @@ impl LinkoraContract {
         window_end: u64,
     ) -> bool {
         validate_non_default_address(&env, "creator", &creator);
+        assert!(
+            window_start <= window_end,
+            "window_start must be <= window_end"
+        );
+        let current_time = env.ledger().timestamp();
+        assert!(
+            current_time >= window_start && current_time <= window_end,
+            "attestation outside time window"
+        );
         let oracle_key = StorageKey::OracleKey(oracle_name.clone());
         let pubkey: BytesN<32> = env
             .storage()
@@ -2937,6 +2998,73 @@ impl LinkoraContract {
         env.storage()
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+
+    // ── Block cleanup helpers ──────────────────────────────────────────────
+
+    /// Remove follow relationships in both directions between two users.
+    /// Called by block_user to enforce a clean break.
+    fn cleanup_follow_on_block(env: &Env, user_a: &Address, user_b: &Address) {
+        // Remove a -> b follow if it exists
+        let edge_key_ab = StorageKey::Edge(user_a.clone(), user_b.clone());
+        if env.storage().persistent().has(&edge_key_ab) {
+            env.storage().persistent().remove(&edge_key_ab);
+            Self::swap_remove_from_index(env, user_a, user_b, true);
+            Self::swap_remove_from_index(env, user_b, user_a, false);
+        }
+
+        // Remove b -> a follow if it exists
+        let edge_key_ba = StorageKey::Edge(user_b.clone(), user_a.clone());
+        if env.storage().persistent().has(&edge_key_ba) {
+            env.storage().persistent().remove(&edge_key_ba);
+            Self::swap_remove_from_index(env, user_b, user_a, true);
+            Self::swap_remove_from_index(env, user_a, user_b, false);
+        }
+    }
+
+    /// Remove like entries on posts authored by either party, liked by the other.
+    /// Called by block_user to enforce a clean break.
+    /// Iterates over the post count and checks likes for the affected pair.
+    fn cleanup_likes_on_block(env: &Env, user_a: &Address, user_b: &Address) {
+        let post_count: u64 = env.storage().instance().get(&POST_CT).unwrap_or(0);
+        if post_count == 0 {
+            return;
+        }
+
+        // Check all post IDs for likes between user_a and user_b
+        for post_id in 1..=post_count {
+            // Remove user_a's like on user_b's posts
+            let like_key_a = StorageKey::Like(post_id, user_a.clone());
+            if env.storage().persistent().has(&like_key_a) {
+                let post_key = StorageKey::Post(post_id);
+                if let Some(mut post) = env.storage().persistent().get::<_, Post>(&post_key) {
+                    if post.author == *user_b {
+                        env.storage().persistent().remove(&like_key_a);
+                        if post.like_count > 0 {
+                            post.like_count -= 1;
+                        }
+                        env.storage().persistent().set(&post_key, &post);
+                        Self::bump(env, &post_key);
+                    }
+                }
+            }
+
+            // Remove user_b's like on user_a's posts
+            let like_key_b = StorageKey::Like(post_id, user_b.clone());
+            if env.storage().persistent().has(&like_key_b) {
+                let post_key = StorageKey::Post(post_id);
+                if let Some(mut post) = env.storage().persistent().get::<_, Post>(&post_key) {
+                    if post.author == *user_a {
+                        env.storage().persistent().remove(&like_key_b);
+                        if post.like_count > 0 {
+                            post.like_count -= 1;
+                        }
+                        env.storage().persistent().set(&post_key, &post);
+                        Self::bump(env, &post_key);
+                    }
+                }
+            }
+        }
     }
 
     // ── Adjacency-set helpers (ADR-001) ───────────────────────────────────
