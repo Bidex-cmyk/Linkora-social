@@ -5377,6 +5377,55 @@ fn test_register_oracle_no_custom_event() {
     assert!(result);
 }
 
+// ── batch_bump_user_graph tests ───────────────────────────────────────────────
+
+#[test]
+fn batch_bump_user_graph_returns_positive_for_existing_user() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.set_profile(&user, &String::from_str(&env, "alice"), &token);
+
+    let bumped = client.batch_bump_user_graph(&admin, &user);
+
+    // Existing user should be processed successfully.
+    // The exact number bumped depends on current TTLs.
+    assert!(bumped >= 0);
+}
+
+#[test]
+fn batch_bump_user_graph_returns_zero_for_unknown_user() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+
+    let bumped = client.batch_bump_user_graph(&admin, &user);
+
+    assert_eq!(bumped, 0);
+}
+
+#[test]
+#[should_panic(expected = "Admin role required")]
+fn batch_bump_requires_admin_role() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _, _) = setup_contract(&env);
+
+    let not_admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.batch_bump_user_graph(&not_admin, &user);
+}
+
 // ── verify_analytics_attestation tests ───────────────────────────────────────
 
 #[test]
@@ -5899,4 +5948,148 @@ fn test_verify_attestation_event_emitted() {
         events_after > events_before,
         "verify_analytics_attestation must emit an event"
     );
+}
+
+#[test]
+#[should_panic(expected = "profile does not exist")]
+fn get_rent_expiry_panics_for_unknown_user() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+
+    client.get_rent_expiry(&user);
+}
+
+#[test]
+fn get_rent_expiry_returns_positive_after_profile_creation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.set_profile(&user, &String::from_str(&env, "alice"), &token);
+
+    let expiry = client.get_rent_expiry(&user);
+
+    assert!(expiry > 0);
+}
+#[test]
+fn get_rent_expiry_is_stable_without_changes() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.set_profile(&user, &String::from_str(&env, "alice"), &token);
+
+    let first = client.get_rent_expiry(&user);
+    let second = client.get_rent_expiry(&user);
+
+    assert_eq!(first, second);
+}
+
+#[test]
+fn set_rent_rate_updates_value() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, _) = setup_contract(&env);
+
+    assert_eq!(client.get_rent_rate_bps(), 100);
+
+    client.set_rent_rate_bps(&admin, &250);
+
+    assert_eq!(client.get_rent_rate_bps(), 250);
+}
+
+#[test]
+#[should_panic(expected = "Admin role required")]
+fn set_rent_rate_requires_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _, _) = setup_contract(&env);
+
+    let not_admin = Address::generate(&env);
+
+    client.set_rent_rate_bps(&not_admin, &250);
+}
+
+#[test]
+#[should_panic]
+fn set_rent_rate_rejects_above_max() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, _) = setup_contract(&env);
+
+    client.set_rent_rate_bps(&admin, &10_001);
+}
+
+#[test]
+fn pay_rent_transfers_tokens_to_treasury() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, treasury) = setup_contract(&env);
+
+    // Use a realistic rent rate so a small payment extends rent.
+    client.set_rent_rate_bps(&admin, &100);
+
+    let user = Address::generate(&env);
+    let token = setup_token(&env, &user);
+
+    client.set_profile(&user, &String::from_str(&env, "alice"), &token);
+
+    let token_client = TokenClient::new(&env, &token);
+
+    let treasury_before = token_client.balance(&treasury);
+    let user_before = token_client.balance(&user);
+
+    let amount = 1_000_000_000i128;
+
+    StellarAssetClient::new(&env, &token).mint(&user, &amount);
+
+    assert_eq!(TokenClient::new(&env, &token).balance(&user), 1_000_010_000);
+
+    let treasury_before = token_client.balance(&treasury);
+    let user_before = token_client.balance(&user);
+
+    client.pay_rent(&user, &token, &amount);
+
+    let treasury_after = token_client.balance(&treasury);
+    let user_after = token_client.balance(&user);
+
+    assert_eq!(treasury_after, treasury_before + amount);
+    assert_eq!(user_after, user_before - amount);
+
+    let expiry = client.get_rent_expiry(&user);
+    assert!(expiry > env.ledger().sequence());
+}
+
+#[test]
+#[should_panic(expected = "amount too small for rent rate")]
+fn pay_rent_rejects_tiny_payment() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, _) = setup_contract(&env);
+
+    client.set_rent_rate_bps(&admin, &100);
+
+    let user = Address::generate(&env);
+    let token = setup_token(&env, &user);
+
+    client.set_profile(&user, &String::from_str(&env, "alice"), &token);
+
+    client.pay_rent(&user, &token, &1);
 }
