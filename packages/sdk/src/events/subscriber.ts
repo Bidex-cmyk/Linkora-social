@@ -137,6 +137,25 @@ export class LinkoraEventSubscriber {
     await this.loopPromise;
   }
 
+  /**
+   * Destroy the subscriber, stop polling, clean up all resources, and reset state.
+   * After calling destroy(), the subscriber cannot be restarted.
+   *
+   * @returns A promise that resolves when cleanup is complete.
+   *
+   * @example
+   * ```ts
+   * await subscriber.destroy();
+   * console.log("Subscriber destroyed and all resources cleaned up.");
+   * ```
+   */
+  async destroy(): Promise<void> {
+    await this.stop();
+    this.handlers = {};
+    this.cursor = undefined;
+    this.pollIntervalMs = this.config.minPollIntervalMs ?? DEFAULT_MIN_POLL_INTERVAL_MS;
+  }
+
   private async loop(): Promise<void> {
     while (!this.stopRequested) {
       try {

@@ -12,9 +12,10 @@ use soroban_sdk::testutils::storage::Persistent as _;
 mod validation;
 
 use validation::{
-    validate_address_list, validate_amount, validate_content, validate_gov_parameter,
+    validate_address_list, validate_amount, validate_bio, validate_content, validate_gov_parameter,
     validate_non_default_address, validate_protocol_fee, validate_report_verdict,
-    validate_signature, validate_u32_range, validate_username, MAX_FEE_BPS, MAX_QUORUM,
+    validate_signature, validate_u32_range, validate_username, MAX_BIO_LEN, MAX_CONTENT_LEN,
+    MAX_FEE_BPS, MAX_QUORUM,
 };
 
 // ── Storage Key Enum ──────────────────────────────────────────────────────────
@@ -136,6 +137,8 @@ const MODERATION_SLASH_BPS: Symbol = symbol_short!("MOD_SL_B");
 const CONTRACT_STATE: Symbol = symbol_short!("CT_STATE");
 const ROLES: Symbol = symbol_short!("ROLES");
 const PAUSED: Symbol = symbol_short!("PAUSED");
+const MAX_POST_LEN_KEY: Symbol = symbol_short!("MAX_POST");
+const MAX_BIO_LEN_KEY: Symbol = symbol_short!("MAX_BIO");
 
 // ── TTL Constants ─────────────────────────────────────────────────────────────
 //
@@ -716,6 +719,13 @@ impl LinkoraContract {
             .instance()
             .set(&TIP_COOLDOWN_WINDOW, &TIP_COOLDOWN_LEDGERS);
         env.storage().instance().set(&MODERATION_SLASH_BPS, &0u32);
+        // Initialize storage quota limits
+        env.storage()
+            .instance()
+            .set(&MAX_POST_LEN_KEY, &MAX_CONTENT_LEN);
+        env.storage()
+            .instance()
+            .set(&MAX_BIO_LEN_KEY, &MAX_BIO_LEN);
         env.storage().instance().set(
             &CONTRACT_STATE,
             &ContractState {
@@ -1692,7 +1702,14 @@ impl LinkoraContract {
         Self::bump_instance(&env);
         author.require_auth();
         validate_non_default_address(&env, "author", &author);
-        validate_content(&env, &content);
+        // Validate content against configurable limit
+        let max_post_len = Self::get_max_post_content_len(env.clone());
+        require_with_error!(&env, !content.is_empty(), "content cannot be empty");
+        require_with_error!(
+            &env,
+            content.len() <= max_post_len,
+            format!("content must be at most {max_post_len} characters")
+        );
         Self::require_not_paused(&env);
 
         let id: u64 = env.storage().instance().get(&POST_CT).unwrap_or(0u64) + 1;
@@ -2441,6 +2458,46 @@ impl LinkoraContract {
             .instance()
             .get(&TIP_COOLDOWN_WINDOW)
             .unwrap_or(1u32)
+    }
+
+    // ── Storage Quota Management ──────────────────────────────────────────────
+
+    pub fn set_max_post_content_len(env: Env, admin: Address, max_len: u32) {
+        Self::bump_instance(&env);
+        admin.require_auth();
+        validate_non_default_address(&env, "admin", &admin);
+        Self::require_role(&env, &admin, Role::Admin);
+        validate_u32_range(&env, "max_len", max_len, 1, 10_000);
+        Self::require_not_paused(&env);
+        env.storage()
+            .instance()
+            .set(&MAX_POST_LEN_KEY, &max_len);
+    }
+
+    pub fn get_max_post_content_len(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&MAX_POST_LEN_KEY)
+            .unwrap_or(MAX_CONTENT_LEN)
+    }
+
+    pub fn set_max_bio_len(env: Env, admin: Address, max_len: u32) {
+        Self::bump_instance(&env);
+        admin.require_auth();
+        validate_non_default_address(&env, "admin", &admin);
+        Self::require_role(&env, &admin, Role::Admin);
+        validate_u32_range(&env, "max_len", max_len, 1, 10_000);
+        Self::require_not_paused(&env);
+        env.storage()
+            .instance()
+            .set(&MAX_BIO_LEN_KEY, &max_len);
+    }
+
+    pub fn get_max_bio_len(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&MAX_BIO_LEN_KEY)
+            .unwrap_or(MAX_BIO_LEN)
     }
 
     // ── Governance ────────────────────────────────────────────────────────────
