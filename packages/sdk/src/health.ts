@@ -99,6 +99,15 @@ export class ConnectionHealthMonitor {
     }
   }
 
+  /** Destroy the monitor, stop all checks, clear listeners, and reset state. */
+  destroy(): void {
+    this.stop();
+    this.listeners = [];
+    this.status = "disconnected";
+    this.retryMetrics = emptyRetryMetrics();
+    this._currentBackoff = 0;
+  }
+
   private scheduleCheck(delayMs: number): void {
     this.timer = setTimeout(() => this.runCheck(), delayMs);
   }
