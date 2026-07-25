@@ -47,7 +47,44 @@ const SCORE_REFRESH_INTERVAL_MINUTES = cfg.scoreRefreshIntervalMinutes;
 
 // ── Database ──────────────────────────────────────────────────────────────────
 
-const pgPool = new Pool({ connectionString: DATABASE_URL });
+const STATEMENT_TIMEOUT_MS = parseInt(process.env.STATEMENT_TIMEOUT_MS || "30000", 10);
+const LOCK_TIMEOUT_MS = parseInt(process.env.LOCK_TIMEOUT_MS || "10000", 10);
+const SLOW_QUERY_THRESHOLD_MS = parseInt(process.env.SLOW_QUERY_THRESHOLD_MS || "5000", 10);
+
+const pgPool = new Pool({
+  connectionString: DATABASE_URL,
+  statement_timeout: STATEMENT_TIMEOUT_MS,
+  lock_timeout: LOCK_TIMEOUT_MS,
+});
+
+// Wrap pool.query to log slow queries
+const originalQuery = pgPool.query.bind(pgPool);
+pgPool.query = function(text: string | any, values?: any[] | any, callback?: any) {
+  const startTime = Date.now();
+  const wrappedCallback = (err: Error | null, result: any) => {
+    const duration = Date.now() - startTime;
+    if (duration > SLOW_QUERY_THRESHOLD_MS) {
+      console.warn(`[slow-query] ${duration}ms: ${typeof text === 'string' ? text.substring(0, 100) : 'prepared statement'}`);
+    }
+    if (callback) callback(err, result);
+  };
+
+  if (typeof values === 'function') {
+    return originalQuery(text, wrappedCallback);
+  } else if (callback) {
+    return originalQuery(text, values, wrappedCallback);
+  } else {
+    const promise = originalQuery(text, values);
+    return promise.then((result) => {
+      const duration = Date.now() - startTime;
+      if (duration > SLOW_QUERY_THRESHOLD_MS) {
+        console.warn(`[slow-query] ${duration}ms: ${typeof text === 'string' ? text.substring(0, 100) : 'prepared statement'}`);
+      }
+      return result;
+    });
+  }
+} as any;
+
 const notificationService = new NotificationService({
   deviceTokenStore: new PostgresDeviceTokenStore(pgPool),
   pool: pgPool,
