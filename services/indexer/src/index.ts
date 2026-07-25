@@ -35,6 +35,7 @@ import { BackfillCoordinator } from "./services/backfill-coordinator";
 import { loadConfig } from "./config";
 import { GracefulShutdown } from "./graceful-shutdown";
 import { logger } from "./logger";
+import { initRateLimiter } from "./middleware/rateLimit";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -90,17 +91,19 @@ poolStatsTimer.unref();
 
 // Wrap pool.query to log slow queries
 const originalQuery = pgPool.query.bind(pgPool);
-pgPool.query = function(text: string | any, values?: any[] | any, callback?: any) {
+pgPool.query = function (text: string | any, values?: any[] | any, callback?: any) {
   const startTime = Date.now();
   const wrappedCallback = (err: Error | null, result: any) => {
     const duration = Date.now() - startTime;
     if (duration > SLOW_QUERY_THRESHOLD_MS) {
-      console.warn(`[slow-query] ${duration}ms: ${typeof text === 'string' ? text.substring(0, 100) : 'prepared statement'}`);
+      console.warn(
+        `[slow-query] ${duration}ms: ${typeof text === "string" ? text.substring(0, 100) : "prepared statement"}`
+      );
     }
     if (callback) callback(err, result);
   };
 
-  if (typeof values === 'function') {
+  if (typeof values === "function") {
     return originalQuery(text, wrappedCallback);
   } else if (callback) {
     return originalQuery(text, values, wrappedCallback);
@@ -109,7 +112,9 @@ pgPool.query = function(text: string | any, values?: any[] | any, callback?: any
     return promise.then((result) => {
       const duration = Date.now() - startTime;
       if (duration > SLOW_QUERY_THRESHOLD_MS) {
-        console.warn(`[slow-query] ${duration}ms: ${typeof text === 'string' ? text.substring(0, 100) : 'prepared statement'}`);
+        console.warn(
+          `[slow-query] ${duration}ms: ${typeof text === "string" ? text.substring(0, 100) : "prepared statement"}`
+        );
       }
       return result;
     });
@@ -280,6 +285,9 @@ async function main(): Promise<void> {
     { rpcUrl: STELLAR_RPC_URL, contractId: CONTRACT_ID, startLedger: START_LEDGER },
     "Config"
   );
+
+  // Initialise HTTP rate limiter (upgrades to Redis store when REDIS_URL is set).
+  await initRateLimiter();
 
   await ensureSchema();
 
