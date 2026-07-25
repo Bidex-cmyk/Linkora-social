@@ -5,6 +5,7 @@ use soroban_sdk::{Address, Env, String, Vec};
 use crate::{GovParameter, ReportStatus};
 
 pub const MAX_NAME_LEN: u32 = 50;
+pub const MIN_NAME_LEN: u32 = 3;
 pub const MAX_BIO_LEN: u32 = 500;
 pub const MAX_CONTENT_LEN: u32 = 2_000;
 pub const MAX_PROTOCOL_AMOUNT: i128 = 1_000_000_000_000_000_000_000_000_000_000_000_000;
@@ -56,6 +57,11 @@ pub fn validate_string_max_len(env: &Env, label: &str, value: &String, max: u32)
 }
 
 pub fn validate_username(env: &Env, username: &String) {
+    require_with_error!(
+        env,
+        username.len() >= MIN_NAME_LEN,
+        "username too short"
+    );
     validate_string_max_len(env, "username", username, MAX_NAME_LEN);
 }
 
