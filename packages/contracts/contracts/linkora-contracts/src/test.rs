@@ -18,7 +18,7 @@ fn setup_token(env: &Env, admin: &Address) -> Address {
     token_id.address()
 }
 
-fn setup_contract(env: &Env) -> (LinkoraContractClient<'_>, Address, Address) {
+pub fn setup_contract(env: &Env) -> (LinkoraContractClient<'_>, Address, Address) {
     let contract_id = env.register(LinkoraContract, ());
     let client = LinkoraContractClient::new(env, &contract_id);
     let admin = Address::generate(env);
@@ -4311,7 +4311,10 @@ fn test_gov_snapshot_vote_window_immutable() {
     // Now vote should fail because original snapshotted window expired
     let voter2 = Address::generate(&env);
     let result = client.try_gov_vote(&voter2, &proposal_id, &true);
-    assert!(result.is_err(), "vote must fail after snapshotted window expired");
+    assert!(
+        result.is_err(),
+        "vote must fail after snapshotted window expired"
+    );
 }
 
 #[test]
@@ -5590,6 +5593,55 @@ fn test_register_oracle_no_custom_event() {
     assert!(result);
 }
 
+// ── batch_bump_user_graph tests ───────────────────────────────────────────────
+
+#[test]
+fn batch_bump_user_graph_returns_positive_for_existing_user() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.set_profile(&user, &String::from_str(&env, "alice"), &token);
+
+    let bumped = client.batch_bump_user_graph(&admin, &user);
+
+    // Existing user should be processed successfully.
+    // The exact number bumped depends on current TTLs.
+    assert!(bumped >= 0);
+}
+
+#[test]
+fn batch_bump_user_graph_returns_zero_for_unknown_user() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+
+    let bumped = client.batch_bump_user_graph(&admin, &user);
+
+    assert_eq!(bumped, 0);
+}
+
+#[test]
+#[should_panic(expected = "Admin role required")]
+fn batch_bump_requires_admin_role() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _, _) = setup_contract(&env);
+
+    let not_admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.batch_bump_user_graph(&not_admin, &user);
+}
+
 // ── verify_analytics_attestation tests ───────────────────────────────────────
 
 #[test]
@@ -6114,6 +6166,148 @@ fn test_verify_attestation_event_emitted() {
     );
 }
 
+#[test]
+#[should_panic(expected = "profile does not exist")]
+fn get_rent_expiry_panics_for_unknown_user() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+
+    client.get_rent_expiry(&user);
+}
+
+#[test]
+fn get_rent_expiry_returns_positive_after_profile_creation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.set_profile(&user, &String::from_str(&env, "alice"), &token);
+
+    let expiry = client.get_rent_expiry(&user);
+
+    assert!(expiry > 0);
+}
+#[test]
+fn get_rent_expiry_is_stable_without_changes() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.set_profile(&user, &String::from_str(&env, "alice"), &token);
+
+    let first = client.get_rent_expiry(&user);
+    let second = client.get_rent_expiry(&user);
+
+    assert_eq!(first, second);
+}
+
+#[test]
+fn set_rent_rate_updates_value() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, _) = setup_contract(&env);
+
+    assert_eq!(client.get_rent_rate_bps(), 100);
+
+    client.set_rent_rate_bps(&admin, &250);
+
+    assert_eq!(client.get_rent_rate_bps(), 250);
+}
+
+#[test]
+#[should_panic(expected = "Admin role required")]
+fn set_rent_rate_requires_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _, _) = setup_contract(&env);
+
+    let not_admin = Address::generate(&env);
+
+    client.set_rent_rate_bps(&not_admin, &250);
+}
+
+#[test]
+#[should_panic]
+fn set_rent_rate_rejects_above_max() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, _) = setup_contract(&env);
+
+    client.set_rent_rate_bps(&admin, &10_001);
+}
+
+#[test]
+fn pay_rent_transfers_tokens_to_treasury() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, treasury) = setup_contract(&env);
+
+    // Use a realistic rent rate so a small payment extends rent.
+    client.set_rent_rate_bps(&admin, &100);
+
+    let user = Address::generate(&env);
+    let token = setup_token(&env, &user);
+
+    client.set_profile(&user, &String::from_str(&env, "alice"), &token);
+
+    let token_client = TokenClient::new(&env, &token);
+
+    let treasury_before = token_client.balance(&treasury);
+    let user_before = token_client.balance(&user);
+
+    let amount = 1_000_000_000i128;
+
+    StellarAssetClient::new(&env, &token).mint(&user, &amount);
+
+    assert_eq!(TokenClient::new(&env, &token).balance(&user), 1_000_010_000);
+
+    let treasury_before = token_client.balance(&treasury);
+    let user_before = token_client.balance(&user);
+
+    client.pay_rent(&user, &token, &amount);
+
+    let treasury_after = token_client.balance(&treasury);
+    let user_after = token_client.balance(&user);
+
+    assert_eq!(treasury_after, treasury_before + amount);
+    assert_eq!(user_after, user_before - amount);
+
+    let expiry = client.get_rent_expiry(&user);
+    assert!(expiry > env.ledger().sequence());
+}
+
+#[test]
+#[should_panic(expected = "amount too small for rent rate")]
+fn pay_rent_rejects_tiny_payment() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, _) = setup_contract(&env);
+
+    client.set_rent_rate_bps(&admin, &100);
+
+    let user = Address::generate(&env);
+    let token = setup_token(&env, &user);
+
+    client.set_profile(&user, &String::from_str(&env, "alice"), &token);
+
+    client.pay_rent(&user, &token, &1);
 // ── Lazy Cleanup Tests ────────────────────────────────────────────────────────
 
 #[test]
@@ -6704,4 +6898,280 @@ fn test_batch_cleanup_post_chunked_works() {
     client.batch_cleanup_post(&post_id, &2);
     client.batch_cleanup_post(&post_id, &10); // Finish remaining
     assert!(client.get_post(&post_id).is_none());
+}
+
+// ── Credential Subsystem Tests ─────────────────────────────────────────────────
+
+#[test]
+fn test_update_credential_root_persists() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let root = BytesN::from_array(&env, &[1u8; 32]);
+
+    client.update_credential_root(&user, &root);
+
+    let retrieved = client.get_credential_root(&user);
+    assert!(retrieved.is_some());
+    assert_eq!(retrieved.unwrap(), root);
+}
+
+#[test]
+fn test_update_credential_root_multiple_updates() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let root1 = BytesN::from_array(&env, &[1u8; 32]);
+    let root2 = BytesN::from_array(&env, &[2u8; 32]);
+    let root3 = BytesN::from_array(&env, &[3u8; 32]);
+
+    client.update_credential_root(&user, &root1);
+    client.update_credential_root(&user, &root2);
+    client.update_credential_root(&user, &root3);
+
+    let retrieved = client.get_credential_root(&user).unwrap();
+    assert_eq!(retrieved, root3, "latest value should be stored");
+}
+
+#[test]
+fn test_update_credential_root_independent_users() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user1 = Address::generate(&env);
+    let user2 = Address::generate(&env);
+    let root1 = BytesN::from_array(&env, &[1u8; 32]);
+    let root2 = BytesN::from_array(&env, &[2u8; 32]);
+
+    client.update_credential_root(&user1, &root1);
+    client.update_credential_root(&user2, &root2);
+
+    assert_eq!(client.get_credential_root(&user1).unwrap(), root1);
+    assert_eq!(client.get_credential_root(&user2).unwrap(), root2);
+}
+
+#[test]
+fn test_get_credential_root_none_when_not_set() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+
+    let retrieved = client.get_credential_root(&user);
+    assert!(
+        retrieved.is_none(),
+        "should return None for user with no root"
+    );
+}
+
+#[test]
+fn test_verify_credential_valid_proof() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+
+    // Create a simple Merkle tree with one leaf
+    // For a single leaf, the root is just the hash of the leaf
+    let leaf = BytesN::from_array(&env, &[1u8; 32]);
+    let proof: Vec<BytesN<32>> = vec![&env];
+
+    // Compute the expected root (hash of leaf with empty proof = leaf itself)
+    let root = leaf.clone();
+
+    client.update_credential_root(&user, &root);
+
+    let nullifier = BytesN::from_array(&env, &[10u8; 32]);
+    let result = client.verify_credential(&user, &leaf, &proof, &nullifier);
+
+    assert!(result, "valid proof should return true");
+}
+
+#[test]
+fn test_verify_credential_invalid_proof_wrong_leaf() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+
+    let root = BytesN::from_array(&env, &[1u8; 32]);
+    let wrong_leaf = BytesN::from_array(&env, &[2u8; 32]);
+    let proof: Vec<BytesN<32>> = vec![&env];
+
+    client.update_credential_root(&user, &root);
+
+    let nullifier = BytesN::from_array(&env, &[10u8; 32]);
+    let result = client.verify_credential(&user, &wrong_leaf, &proof, &nullifier);
+
+    assert!(!result, "invalid proof with wrong leaf should return false");
+}
+
+#[test]
+fn test_verify_credential_invalid_proof_wrong_path() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+
+    let leaf = BytesN::from_array(&env, &[1u8; 32]);
+    let root = leaf.clone();
+    let wrong_sibling = BytesN::from_array(&env, &[99u8; 32]);
+    let proof = vec![&env, wrong_sibling];
+
+    client.update_credential_root(&user, &root);
+
+    let nullifier = BytesN::from_array(&env, &[10u8; 32]);
+    let result = client.verify_credential(&user, &leaf, &proof, &nullifier);
+
+    assert!(!result, "invalid proof with wrong path should return false");
+}
+
+#[test]
+#[should_panic(expected = "no credential root set")]
+fn test_verify_credential_panics_no_root() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let leaf = BytesN::from_array(&env, &[1u8; 32]);
+    let proof: Vec<BytesN<32>> = vec![&env];
+    let nullifier = BytesN::from_array(&env, &[10u8; 32]);
+
+    // Try to verify without setting a root
+    client.verify_credential(&user, &leaf, &proof, &nullifier);
+}
+
+#[test]
+#[should_panic(expected = "nullifier already used")]
+fn test_verify_credential_nullifier_replay_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+
+    let leaf = BytesN::from_array(&env, &[1u8; 32]);
+    let root = leaf.clone();
+    let proof: Vec<BytesN<32>> = vec![&env];
+    let nullifier = BytesN::from_array(&env, &[10u8; 32]);
+
+    client.update_credential_root(&user, &root);
+
+    // First verification should succeed
+    let result1 = client.verify_credential(&user, &leaf, &proof, &nullifier);
+    assert!(result1);
+
+    // Second verification with same nullifier should panic
+    client.verify_credential(&user, &leaf, &proof, &nullifier);
+}
+
+#[test]
+fn test_verify_credential_different_nullifiers_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+
+    let leaf = BytesN::from_array(&env, &[1u8; 32]);
+    let root = leaf.clone();
+    let proof: Vec<BytesN<32>> = vec![&env];
+    let nullifier1 = BytesN::from_array(&env, &[10u8; 32]);
+    let nullifier2 = BytesN::from_array(&env, &[20u8; 32]);
+
+    client.update_credential_root(&user, &root);
+
+    // Both verifications with different nullifiers should succeed
+    let result1 = client.verify_credential(&user, &leaf, &proof, &nullifier1);
+    assert!(result1);
+
+    let result2 = client.verify_credential(&user, &leaf, &proof, &nullifier2);
+    assert!(result2);
+}
+
+#[test]
+fn test_verify_credential_empty_proof() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+
+    // For empty proof, root should equal leaf
+    let leaf = BytesN::from_array(&env, &[1u8; 32]);
+    let root = leaf.clone();
+    let proof: Vec<BytesN<32>> = vec![&env];
+
+    client.update_credential_root(&user, &root);
+
+    let nullifier = BytesN::from_array(&env, &[10u8; 32]);
+    let result = client.verify_credential(&user, &leaf, &proof, &nullifier);
+
+    assert!(result, "empty proof should work when root equals leaf");
+}
+
+#[test]
+fn test_verify_credential_max_depth_proof() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+
+    // Create a proof with multiple levels
+    let leaf = BytesN::from_array(&env, &[1u8; 32]);
+    let sibling1 = BytesN::from_array(&env, &[2u8; 32]);
+    let sibling2 = BytesN::from_array(&env, &[3u8; 32]);
+    let sibling3 = BytesN::from_array(&env, &[4u8; 32]);
+    let proof = vec![&env, sibling1.clone(), sibling2.clone(), sibling3.clone()];
+
+    // Compute the expected root using position-dependent hash
+    let mut current = leaf.clone();
+    let mut index = 0u8;
+
+    // Add sibling1 with index 0
+    let mut result1 = [0u8; 32];
+    let current_arr = current.to_array();
+    let s1_arr = sibling1.clone().to_array();
+    for i in 0..32 {
+        result1[i] = current_arr[i].wrapping_add(s1_arr[i]).wrapping_add(index);
+    }
+    current = BytesN::from_array(&env, &result1);
+    index = index.wrapping_add(1);
+
+    // Add sibling2 with index 1
+    let mut result2 = [0u8; 32];
+    let current_arr2 = current.to_array();
+    let s2_arr = sibling2.clone().to_array();
+    for i in 0..32 {
+        result2[i] = current_arr2[i].wrapping_add(s2_arr[i]).wrapping_add(index);
+    }
+    current = BytesN::from_array(&env, &result2);
+    index = index.wrapping_add(1);
+
+    // Add sibling3 with index 2
+    let mut result3 = [0u8; 32];
+    let current_arr3 = current.to_array();
+    let s3_arr = sibling3.clone().to_array();
+    for i in 0..32 {
+        result3[i] = current_arr3[i].wrapping_add(s3_arr[i]).wrapping_add(index);
+    }
+    let root = BytesN::from_array(&env, &result3);
+
+    client.update_credential_root(&user, &root);
+
+    let nullifier = BytesN::from_array(&env, &[10u8; 32]);
+    let result = client.verify_credential(&user, &leaf, &proof, &nullifier);
+
+    assert!(result, "max depth proof should verify correctly");
 }

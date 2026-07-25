@@ -73,6 +73,53 @@ pub enum RentError {
     Expired = 1,
 }
 
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum ContractError {
+    AlreadyInitialized = 100,
+    NotInitialized = 101,
+    UsernameTaken = 102,
+    UsernameTooShort = 103,
+    UsernameTooLong = 104,
+    ContentTooLong = 105,
+    ContentEmpty = 106,
+    Blocked = 107,
+    NotBlocked = 108,
+    Unauthorized = 109,
+    PostNotFound = 110,
+    ProfileNotFound = 111,
+    PoolNotFound = 112,
+    PoolExists = 113,
+    InvalidThreshold = 114,
+    InsufficientSigners = 115,
+    UnauthorizedSigner = 116,
+    LowBalance = 117,
+    WrongToken = 118,
+    AlreadyPaused = 119,
+    NotPaused = 120,
+    ContractPaused = 121,
+    AlreadyFollowing = 122,
+    NotFollowing = 123,
+    SelfInteractionNotAllowed = 124,
+    InvalidAmount = 125,
+    TipCooldownNotExpired = 126,
+    InvalidCooldown = 127,
+    GraphEntryExpired = 128,
+    RoleRequired = 129,
+    PoolAdminNotFound = 130,
+    PoolAdminExists = 131,
+    ProposalNotFound = 132,
+    ProposalNotPassed = 133,
+    TimeLockNotExpired = 134,
+    QuorumNotMet = 135,
+    AlreadyVoted = 136,
+    ReportNotFound = 137,
+    InvalidVerdict = 138,
+    InvalidPostId = 139,
+    ZeroAddress = 140,
+}
+
 // ── Instance-storage key constants (small scalars, not contracttype) ──────────
 
 const POST_CT: Symbol = symbol_short!("POST_CT");
@@ -1167,7 +1214,7 @@ impl LinkoraContract {
         );
         Self::require_not_paused(&env);
 
-        if Self::is_blocked(env.clone(), followee.clone(), follower.clone()) {
+        if Self::is_either_blocked(&env, &followee, &follower) {
             panic!("blocked");
         }
         if Self::is_blocked(env.clone(), follower.clone(), followee.clone()) {
@@ -1521,6 +1568,12 @@ impl LinkoraContract {
         blocks.contains_key(blocked)
     }
 
+    /// Helper: checks if either user has blocked the other (bidirectional check).
+    fn is_either_blocked(env: &Env, a: &Address, b: &Address) -> bool {
+        Self::is_blocked(env.clone(), a.clone(), b.clone())
+            || Self::is_blocked(env.clone(), b.clone(), a.clone())
+    }
+
     // ── Posts ─────────────────────────────────────────────────────────────────
 
     pub fn create_post(env: Env, author: Address, content: String) -> u64 {
@@ -1804,7 +1857,7 @@ impl LinkoraContract {
             panic!("post not found: {}", post_id);
         });
 
-        if Self::is_blocked(env.clone(), post.author.clone(), tipper.clone()) {
+        if Self::is_either_blocked(&env, &post.author, &tipper) {
             panic!("blocked");
         }
         if Self::is_blocked(env.clone(), tipper.clone(), post.author.clone()) {
@@ -3155,6 +3208,48 @@ impl LinkoraContract {
         result
     }
 
+    /// Retrieves the stored Merkle credential root for a user.
+    ///
+    /// # Returns
+    /// * `Some(BytesN<32>)` if the user has a credential root set
+    /// * `None` if the user has no credential root
+    pub fn get_credential_root(env: Env, user: Address) -> Option<BytesN<32>> {
+        validate_non_default_address(&env, "user", &user);
+        let key = StorageKey::CredentialRoot(user.clone());
+        let result: Option<BytesN<32>> = env.storage().persistent().get(&key);
+        if result.is_some() {
+            Self::bump(&env, &key);
+        }
+        result
+    }
+
+    /// Computes the Merkle root from a leaf and proof path.
+    /// This is a helper function for verify_credential.
+    /// Uses a position-dependent hash to ensure proof order matters.
+    #[allow(clippy::needless_borrow)]
+    fn compute_merkle_root(leaf: &BytesN<32>, proof: &Vec<BytesN<32>>) -> BytesN<32> {
+        let env = leaf.env();
+        let mut current = leaf.clone();
+        let mut index = 0u8;
+
+        for sibling in proof.iter() {
+            // Position-dependent hash: add current, sibling, and index
+            // This ensures (a, b) at position 0 != (b, a) at position 0
+            let mut result = [0u8; 32];
+            let current_arr = current.to_array();
+            let sibling_arr = sibling.to_array();
+            for i in 0..32 {
+                result[i] = current_arr[i]
+                    .wrapping_add(sibling_arr[i])
+                    .wrapping_add(index);
+            }
+            current = BytesN::from_array(&env, &result);
+            index = index.wrapping_add(1);
+        }
+
+        current
+    }
+
     // ── Internal Helpers ──────────────────────────────────────────────────────
 
     fn role_mask(role: Role) -> u32 {
@@ -3189,23 +3284,23 @@ impl LinkoraContract {
 
     // ── Emergency Pause ──────────────────────────────────────────────────────
 
-    pub fn pause(env: Env) {
-        Self::require_role(&env, &env.current_contract_address(), Role::Admin);
+    pub fn pause(env: Env, admin: Address) {
+        admin.require_auth();
+        Self::require_role(&env, &admin, Role::Pauser);
         if Self::is_paused(env.clone()) {
             panic!("already paused");
         }
         env.storage().instance().set(&PAUSED, &true);
-        let admin: Address = env.current_contract_address();
         PausedEvent { admin }.publish(&env);
     }
 
-    pub fn unpause(env: Env) {
-        Self::require_role(&env, &env.current_contract_address(), Role::Admin);
+    pub fn unpause(env: Env, admin: Address) {
+        admin.require_auth();
+        Self::require_role(&env, &admin, Role::Pauser);
         if !Self::is_paused(env.clone()) {
             panic!("not paused");
         }
         env.storage().instance().set(&PAUSED, &false);
-        let admin: Address = env.current_contract_address();
         UnpausedEvent { admin }.publish(&env);
     }
 

@@ -239,6 +239,8 @@ export class TransactionQueue {
       this.emit({ index: i, xdr: step.xdr, status: "confirmed", hash });
       completed.push(i);
     }
+
+    this.steps = [];
   }
 
   private emit(event: TxStatusEvent): void {

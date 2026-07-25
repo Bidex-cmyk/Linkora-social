@@ -126,7 +126,7 @@ export class DmService {
     }
   }
 
-  async sendMessage(toAddress: string, content: string): Promise<void> {
+  async sendMessage(toAddress: string, content: string, senderKeypair: Keypair): Promise<void> {
     if (!this.keypair) {
       throw new Error("No DM keys available. Generate keys first.");
     }
@@ -152,12 +152,8 @@ export class DmService {
       messageIndex
     );
 
-    // Create a keypair for signing (this is a simplified approach)
-    // In a real implementation, you'd get this from the wallet
-    const signingKeypair = Keypair.random(); // This needs to be the user's actual signing keypair
-
-    // Send via relay
-    await this.relayClient.sendMessage(signingKeypair, toAddress, encrypted, messageIndex);
+    // Send via relay using the caller-provided signing keypair
+    await this.relayClient.sendMessage(senderKeypair, toAddress, encrypted, messageIndex);
   }
 
   connectRealTime() {
