@@ -32,6 +32,7 @@ pub enum StorageKey {
     Blocks(Address),           // persistent: blocker -> Map<Address, ()>
     UsernameIndex(String), // persistent: username -> owner Address (reverse index for uniqueness)
     TipCooldown(u64, Address), // temporary: (post_id, tipper) -> last-tip ledger sequence number
+    PoolDepositCooldown(Symbol, Address), // temporary: (pool_id, depositor) -> last-deposit ledger sequence number
     // ── Adjacency-set social graph (ADR-001) ──────────────────────────────
     Edge(Address, Address),         // persistent: (follower, followee) -> bool
     FollowingCount(Address),        // persistent: user -> u32 total following count
@@ -149,6 +150,12 @@ const LEDGER_THRESHOLD: u32 = 535_000 - 100;
 // TIP_COOLDOWN_LEDGERS: default per-tipper per-post cooldown (~1 day at 5s/ledger).
 
 const TIP_COOLDOWN_LEDGERS: u32 = 17_280;
+
+// ── Pool Deposit Cooldown ─────────────────────────────────────────────────────
+//
+// POOL_DEPOSIT_COOLDOWN_LEDGERS: default per-depositor per-pool cooldown (~1 hour at 5s/ledger).
+
+const POOL_DEPOSIT_COOLDOWN_LEDGERS: u32 = 720;
 
 // ── Pagination Limit ──────────────────────────────────────────────────────────
 
@@ -1368,6 +1375,111 @@ impl LinkoraContract {
         Self::paginate_index(&env, &user, offset, limit, false)
     }
 
+    pub fn batch_follow(env: Env, follower: Address, followees: Vec<Address>) {
+        Self::bump_instance(&env);
+        follower.require_auth();
+        validate_non_default_address(&env, "follower", &follower);
+        validate_address_list(&env, "followees", &followees);
+        require_with_error!(
+            &env,
+            followees.len() <= 50,
+            "batch size must not exceed 50"
+        );
+        Self::require_not_paused(&env);
+
+        for followee in followees.iter() {
+            require_with_error!(
+                &env,
+                follower != followee,
+                "follower and followee must be different"
+            );
+            if !Self::is_either_blocked(&env, &followee, &follower) {
+                let edge_key = StorageKey::Edge(follower.clone(), followee.clone());
+                if !env.storage().persistent().has(&edge_key) {
+                    env.storage().persistent().set(&edge_key, &true);
+                    Self::bump(&env, &edge_key);
+
+                    let following_count: u32 = env
+                        .storage()
+                        .persistent()
+                        .get(&StorageKey::FollowingCount(follower.clone()))
+                        .unwrap_or(0u32);
+                    let following_idx_key = StorageKey::FollowingIdx(follower.clone(), following_count);
+                    env.storage()
+                        .persistent()
+                        .set(&following_idx_key, &followee);
+                    Self::bump(&env, &following_idx_key);
+
+                    let following_pos_key = StorageKey::FollowingPos(follower.clone(), followee.clone());
+                    env.storage()
+                        .persistent()
+                        .set(&following_pos_key, &following_count);
+                    Self::bump(&env, &following_pos_key);
+
+                    env.storage().persistent().set(
+                        &StorageKey::FollowingCount(follower.clone()),
+                        &(following_count + 1),
+                    );
+                    Self::bump(&env, &StorageKey::FollowingCount(follower.clone()));
+
+                    let followers_count: u32 = env
+                        .storage()
+                        .persistent()
+                        .get(&StorageKey::FollowersCount(followee.clone()))
+                        .unwrap_or(0u32);
+                    let followers_idx_key = StorageKey::FollowersIdx(followee.clone(), followers_count);
+                    env.storage()
+                        .persistent()
+                        .set(&followers_idx_key, &follower);
+                    Self::bump(&env, &followers_idx_key);
+
+                    let followers_pos_key = StorageKey::FollowersPos(followee.clone(), follower.clone());
+                    env.storage()
+                        .persistent()
+                        .set(&followers_pos_key, &followers_count);
+                    Self::bump(&env, &followers_pos_key);
+
+                    env.storage().persistent().set(
+                        &StorageKey::FollowersCount(followee.clone()),
+                        &(followers_count + 1),
+                    );
+                    Self::bump(&env, &StorageKey::FollowersCount(followee.clone()));
+
+                    FollowEvent {
+                        follower: follower.clone(),
+                        followee: followee.clone()
+                    }.publish(&env);
+                }
+            }
+        }
+    }
+
+    pub fn batch_unfollow(env: Env, follower: Address, followees: Vec<Address>) {
+        Self::bump_instance(&env);
+        follower.require_auth();
+        validate_non_default_address(&env, "follower", &follower);
+        validate_address_list(&env, "followees", &followees);
+        require_with_error!(
+            &env,
+            followees.len() <= 50,
+            "batch size must not exceed 50"
+        );
+        Self::require_not_paused(&env);
+
+        for followee in followees.iter() {
+            let edge_key = StorageKey::Edge(follower.clone(), followee.clone());
+            if env.storage().persistent().has(&edge_key) {
+                env.storage().persistent().remove(&edge_key);
+                Self::swap_remove_from_index(&env, &follower, &followee, true);
+                Self::swap_remove_from_index(&env, &followee, &follower, false);
+                UnfollowEvent {
+                    follower: follower.clone(),
+                    followee: followee.clone()
+                }.publish(&env);
+            }
+        }
+    }
+
     /// Admin function to migrate users from the legacy Vec-based social graph
     /// to the new adjacency-set layout. Processable in chunks of up to 50
     /// users per call. Idempotent: already-migrated edges are skipped.
@@ -1842,6 +1954,53 @@ impl LinkoraContract {
         env.storage().persistent().has(&key)
     }
 
+    pub fn batch_like(env: Env, user: Address, post_ids: Vec<u64>) {
+        Self::bump_instance(&env);
+        user.require_auth();
+        validate_non_default_address(&env, "user", &user);
+        require_with_error!(
+            &env,
+            post_ids.len() <= 50,
+            "batch size must not exceed 50"
+        );
+        Self::require_not_paused(&env);
+
+        for post_id in post_ids.iter() {
+            require_with_error!(&env, post_id > 0, "post id must be positive");
+            let like_key = StorageKey::Like(post_id, user.clone());
+            if !env.storage().persistent().has(&like_key) {
+                let post_key = StorageKey::Post(post_id);
+                if let Some(mut post) = env.storage().persistent().get::<_, Post>(&post_key) {
+                    if !Self::is_blocked(env.clone(), post.author.clone(), user.clone())
+                        && !Self::is_blocked(env.clone(), user.clone(), post.author.clone())
+                    {
+                        let like_idx_key = StorageKey::PostLikersIdx(post_id, post.like_count as u32);
+                        post.like_count += 1;
+                        env.storage().persistent().set(&post_key, &post);
+                        Self::bump(&env, &post_key);
+
+                        env.storage().persistent().set(&like_idx_key, &user);
+                        Self::bump(&env, &like_idx_key);
+
+                        let count_key = StorageKey::PostLikersCount(post_id);
+                        env.storage()
+                            .persistent()
+                            .set(&count_key, &(post.like_count as u32));
+                        Self::bump(&env, &count_key);
+
+                        env.storage().persistent().set(&like_key, &true);
+                        Self::bump(&env, &like_key);
+                        LikePostEvent {
+                            user: user.clone(),
+                            post_id,
+                        }
+                        .publish(&env);
+                    }
+                }
+            }
+        }
+    }
+
     // ── Tipping ───────────────────────────────────────────────────────────────
 
     pub fn tip(env: Env, tipper: Address, post_id: u64, token: Address, amount: i128) {
@@ -1989,6 +2148,18 @@ impl LinkoraContract {
         validate_non_default_address(&env, "token", &token);
         validate_amount(&env, "deposit amount", amount);
         depositor.require_auth();
+
+        // Check pool deposit cooldown
+        let cooldown_key = StorageKey::PoolDepositCooldown(pool_id.clone(), depositor.clone());
+        let current_ledger = env.ledger().sequence();
+        if let Some(last_deposit_ledger) = env.storage().temporary().get::<_, u32>(&cooldown_key) {
+            let ledgers_elapsed = current_ledger.saturating_sub(last_deposit_ledger);
+            assert!(
+                ledgers_elapsed >= POOL_DEPOSIT_COOLDOWN_LEDGERS,
+                "pool deposit cooldown not expired"
+            );
+        }
+
         let key = StorageKey::Pool(pool_id.clone());
         let mut pool: Pool = env
             .storage()
@@ -2000,6 +2171,12 @@ impl LinkoraContract {
         pool.balance += amount;
         env.storage().persistent().set(&key, &pool);
         Self::bump(&env, &key);
+
+        // Record cooldown
+        env.storage()
+            .temporary()
+            .set(&cooldown_key, &current_ledger);
+        Self::bump_temp(&env, &cooldown_key);
 
         token::Client::new(&env, &token).transfer(
             &depositor,
@@ -2483,8 +2660,11 @@ impl LinkoraContract {
         }
     }
 
-    pub fn gov_execute(env: Env, proposal_id: u64) {
+    pub fn gov_execute(env: Env, admin: Address, proposal_id: u64) {
         Self::bump_instance(&env);
+        admin.require_auth();
+        validate_non_default_address(&env, "admin", &admin);
+        Self::require_role(&env, &admin, Role::Admin);
         require_with_error!(&env, proposal_id > 0, "proposal id must be positive");
 
         let config_key = StorageKey::GovConfig;
@@ -2739,6 +2919,16 @@ impl LinkoraContract {
         env.deployer()
             .update_current_contract_wasm(new_wasm_hash.clone());
         ContractUpgraded { new_wasm_hash }.publish(&env);
+    }
+
+    pub fn get_contract_state(env: Env) -> ContractState {
+        env.storage()
+            .instance()
+            .get(&CONTRACT_STATE)
+            .unwrap_or(ContractState {
+                version: 0,
+                implementation_wasm_hash: None,
+            })
     }
 
     // ── Storage Rent Lifecycle Management ─────────────────────────────────────
