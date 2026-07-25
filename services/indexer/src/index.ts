@@ -318,10 +318,12 @@ async function main(): Promise<void> {
   // Start score refresh service
   scoreRefreshService.start();
 
-  // Start gossip in the background.
-  startGossip(pgPool, abortController.signal).catch((err) =>
-    console.error("[gossip] Fatal error:", err)
-  );
+  // Start gossip in the background with auto-replay support.
+  startGossip(pgPool, abortController.signal, {
+    rpcUrl: STELLAR_RPC_URL,
+    contractId: CONTRACT_ID,
+    processBatch,
+  }).catch((err) => console.error("[gossip] Fatal error:", err));
 
   await streamEvents(
     {
