@@ -52,12 +52,39 @@ const SCORE_REFRESH_INTERVAL_MINUTES = cfg.scoreRefreshIntervalMinutes;
 const STATEMENT_TIMEOUT_MS = parseInt(process.env.STATEMENT_TIMEOUT_MS || "30000", 10);
 const LOCK_TIMEOUT_MS = parseInt(process.env.LOCK_TIMEOUT_MS || "10000", 10);
 const SLOW_QUERY_THRESHOLD_MS = parseInt(process.env.SLOW_QUERY_THRESHOLD_MS || "5000", 10);
+const POOL_STATS_LOG_INTERVAL_MS = parseInt(process.env.DB_POOL_STATS_INTERVAL_MS || "60000", 10);
 
 const pgPool = new Pool({
   connectionString: DATABASE_URL,
   statement_timeout: STATEMENT_TIMEOUT_MS,
   lock_timeout: LOCK_TIMEOUT_MS,
+  max: cfg.dbPool.max,
+  idleTimeoutMillis: cfg.dbPool.idleTimeoutMs,
+  connectionTimeoutMillis: cfg.dbPool.connectionTimeoutMs,
 });
+
+logger.info(
+  {
+    max: cfg.dbPool.max,
+    idleTimeoutMs: cfg.dbPool.idleTimeoutMs,
+    connectionTimeoutMs: cfg.dbPool.connectionTimeoutMs,
+  },
+  "PostgreSQL pool configured"
+);
+
+// Periodically log pool utilisation so saturation is visible before it
+// manifests as connection-timeout errors under load.
+const poolStatsTimer = setInterval(() => {
+  logger.info(
+    {
+      totalCount: pgPool.totalCount,
+      idleCount: pgPool.idleCount,
+      waitingCount: pgPool.waitingCount,
+    },
+    "PostgreSQL pool stats"
+  );
+}, POOL_STATS_LOG_INTERVAL_MS);
+poolStatsTimer.unref();
 
 // Wrap pool.query to log slow queries
 const originalQuery = pgPool.query.bind(pgPool);
@@ -232,9 +259,11 @@ const gracefulShutdown = new GracefulShutdown({
   abortController,
   scoreRefreshStop: () => scoreRefreshService.stop(),
   detachNotificationDispatcher,
+  shutdownTimeoutMs: cfg.shutdownTimeoutMs,
   onSignal: (signal) => {
     logger.info({ signal }, "Graceful shutdown initiated");
     healthMonitor.markShuttingDown();
+    clearInterval(poolStatsTimer);
   },
   shutdownFlag,
 });
