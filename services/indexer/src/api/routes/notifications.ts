@@ -2,9 +2,10 @@ import { Router, Request, Response } from "express";
 import { NotificationService } from "../../notifications/service";
 import { requireStellarAuth } from "../../middleware/stellarAuth";
 import { validateBody } from "../../middleware/validate";
+import { rateLimitWrite } from "../../middleware/rateLimit";
 import { z } from "zod";
 import { stellarAddressSchema } from "@linkora/types/src/schemas";
-import { unauthorizedError, internalError } from "@linkora/types/src/errors";
+import { unauthorizedError, internalError, forbiddenError } from "@linkora/types/src/errors";
 
 const PLATFORMS = ["ios", "android", "web"] as const;
 
@@ -16,6 +17,7 @@ const registerDeviceSchema = z.object({
 
 const deregisterDeviceSchema = z.object({
   address: stellarAddressSchema,
+  token: z.string().optional(),
 });
 
 const preferencesSchema = z.object({
@@ -48,21 +50,63 @@ export function createNotificationsRouter(service: NotificationService): Router 
 
   router.post(
     "/register",
+    requireStellarAuth,
+    rateLimitWrite,
     validateBody(registerDeviceSchema),
     async (req: Request, res: Response): Promise<void> => {
+      const authenticatedAddress = req.context?.stellarAddress;
+      if (!authenticatedAddress) {
+        const err = unauthorizedError("Unauthorized");
+        res.status(err.statusCode).json(err.toJSON(req.context?.requestId));
+        return;
+      }
+
       const { address, token, platform } = req.body as z.infer<typeof registerDeviceSchema>;
-      await service.registerDeviceToken(address, token, platform);
-      res.status(204).send();
+
+      if (address !== authenticatedAddress) {
+        const err = forbiddenError("Cannot register tokens for another address");
+        res.status(err.statusCode).json(err.toJSON(req.context?.requestId));
+        return;
+      }
+
+      try {
+        await service.registerDeviceToken(address, token, platform);
+        res.status(204).send();
+      } catch (error) {
+        const err = internalError("Failed to register device token");
+        res.status(err.statusCode).json(err.toJSON(req.context?.requestId));
+      }
     }
   );
 
   router.post(
     "/deregister",
+    requireStellarAuth,
+    rateLimitWrite,
     validateBody(deregisterDeviceSchema),
     async (req: Request, res: Response): Promise<void> => {
-      const { address } = req.body as z.infer<typeof deregisterDeviceSchema>;
-      await service.deregisterDeviceToken(address);
-      res.status(204).send();
+      const authenticatedAddress = req.context?.stellarAddress;
+      if (!authenticatedAddress) {
+        const err = unauthorizedError("Unauthorized");
+        res.status(err.statusCode).json(err.toJSON(req.context?.requestId));
+        return;
+      }
+
+      const { address, token } = req.body as z.infer<typeof deregisterDeviceSchema>;
+
+      if (address !== authenticatedAddress) {
+        const err = forbiddenError("Cannot deregister tokens for another address");
+        res.status(err.statusCode).json(err.toJSON(req.context?.requestId));
+        return;
+      }
+
+      try {
+        await service.deregisterDeviceToken(address, token);
+        res.status(204).send();
+      } catch (error) {
+        const err = internalError("Failed to deregister device token");
+        res.status(err.statusCode).json(err.toJSON(req.context?.requestId));
+      }
     }
   );
 
@@ -108,8 +152,8 @@ export function createNotificationsRouter(service: NotificationService): Router 
           const tokenStr =
             typeof subscription === "string" ? subscription : JSON.stringify(subscription);
           await service.registerDeviceToken(address, tokenStr, "web");
-        } else {
-          await service.deregisterDeviceToken(address);
+        } else if (!preferences.browserPushEnabled) {
+          await service.deregisterWebToken(address);
         }
 
         res.status(200).json({ success: true });
