@@ -3189,23 +3189,23 @@ impl LinkoraContract {
 
     // ── Emergency Pause ──────────────────────────────────────────────────────
 
-    pub fn pause(env: Env) {
-        Self::require_role(&env, &env.current_contract_address(), Role::Admin);
+    pub fn pause(env: Env, admin: Address) {
+        admin.require_auth();
+        Self::require_role(&env, &admin, Role::Pauser);
         if Self::is_paused(env.clone()) {
             panic!("already paused");
         }
         env.storage().instance().set(&PAUSED, &true);
-        let admin: Address = env.current_contract_address();
         PausedEvent { admin }.publish(&env);
     }
 
-    pub fn unpause(env: Env) {
-        Self::require_role(&env, &env.current_contract_address(), Role::Admin);
+    pub fn unpause(env: Env, admin: Address) {
+        admin.require_auth();
+        Self::require_role(&env, &admin, Role::Pauser);
         if !Self::is_paused(env.clone()) {
             panic!("not paused");
         }
         env.storage().instance().set(&PAUSED, &false);
-        let admin: Address = env.current_contract_address();
         UnpausedEvent { admin }.publish(&env);
     }
 
