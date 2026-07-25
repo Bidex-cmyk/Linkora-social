@@ -19,6 +19,8 @@
 import { TokenBucket } from "./ratelimit";
 import { AdaptivePoll } from "./poller";
 import { detectGap } from "./gap";
+import type { BackfillCoordinator } from "./services/backfill-coordinator";
+import type { BackfillConfig } from "./config";
 
 export interface RawEvent {
   type: string;
@@ -49,6 +51,18 @@ export interface StreamConfig {
   maxRetries?: number;
   backoffBaseMs?: number;
   backoffMaxMs?: number;
+  /**
+   * Optional backfill configuration used by the mid-stream gap detector to
+   * enforce depth limits and emit alerts. When omitted, the legacy unbounded
+   * backfill behaviour is used.
+   */
+  backfillConfig?: Pick<BackfillConfig, "maxDepthLedgers" | "alertThreshold">;
+  /**
+   * Optional backfill coordinator. When provided, mid-stream gap recovery is
+   * delegated to it (enabling depth limits, rate limiting, and the circuit
+   * breaker). When absent, a raw fetchRange is used (legacy behaviour).
+   */
+  backfillCoordinator?: BackfillCoordinator;
 }
 
 /**
@@ -397,7 +411,7 @@ export async function streamEvents(
 
       // ── Gap detection ────────────────────────────────────────────────────
       const firstLedger = events[0]?.ledger;
-      const gap = detectGap(firstLedger, cursor);
+      const gap = detectGap(firstLedger, cursor, config.backfillConfig);
       if (gap.hasGap && gap.fromLedger !== undefined && gap.toLedger !== undefined) {
         console.warn(
           JSON.stringify({
@@ -407,19 +421,44 @@ export async function streamEvents(
             receivedLedger: firstLedger,
             missingFrom: gap.fromLedger,
             missingTo: gap.toLedger,
+            gapSize: gap.gapSize,
+            exceedsMaxDepth: gap.exceedsMaxDepth ?? false,
           })
         );
-        const backfilled = await fetchRange(
-          resolved,
-          backoffCfg,
-          config.rpcUrl,
-          config.contractId,
-          gap.fromLedger,
-          gap.toLedger,
-          signal
-        );
-        if (backfilled.length > 0) {
-          cursor = await processBatch(backfilled);
+
+        if (gap.exceedsMaxDepth) {
+          // Alert already emitted by detectGap. Skip auto-backfill.
+          console.error(
+            JSON.stringify({
+              metric: "backfill_skipped",
+              reason: "gap_too_large",
+              fromLedger: gap.fromLedger,
+              toLedger: gap.toLedger,
+              gapSize: gap.gapSize,
+            })
+          );
+        } else if (config.backfillCoordinator) {
+          // Delegate to the coordinator (depth limits + rate limiting + circuit breaker).
+          await config.backfillCoordinator.recoverGap(
+            gap.fromLedger,
+            gap.toLedger,
+            processBatch,
+            signal
+          );
+        } else {
+          // Legacy path: raw fetchRange with no depth limits.
+          const backfilled = await fetchRange(
+            resolved,
+            backoffCfg,
+            config.rpcUrl,
+            config.contractId,
+            gap.fromLedger,
+            gap.toLedger,
+            signal
+          );
+          if (backfilled.length > 0) {
+            cursor = await processBatch(backfilled);
+          }
         }
       }
 
