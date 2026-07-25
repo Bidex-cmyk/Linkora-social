@@ -16,7 +16,6 @@ import {
   mapError,
   NotFoundError,
   SimulationError,
-  InvalidInputError,
   ValidationError,
   NetworkError,
 } from "./errors";
@@ -44,20 +43,20 @@ function scvI128(value: number | bigint): xdr.ScVal {
 
 function ensureNonEmptyString(value: string, fieldName: string): void {
   if (typeof value !== "string" || value.trim().length === 0) {
-    throw new InvalidInputError(`${fieldName} must be a non-empty string.`);
+    throw new ValidationError(`${fieldName} must be a non-empty string.`);
   }
 }
 
 function ensureAddress(value: string, fieldName: string): void {
   ensureNonEmptyString(value, fieldName);
   if (!StrKey.isValidEd25519PublicKey(value)) {
-    throw new InvalidInputError(`${fieldName} must be a valid Stellar public key.`);
+    throw new ValidationError(`${fieldName} must be a valid Stellar public key.`);
   }
 }
 
 function ensureAddressList(values: string[], fieldName: string): void {
   if (!Array.isArray(values)) {
-    throw new InvalidInputError(`${fieldName} must be an array of Stellar public keys.`);
+    throw new ValidationError(`${fieldName} must be an array of Stellar public keys.`);
   }
   values.forEach((value, index) => ensureAddress(value, `${fieldName}[${index}]`));
 }
@@ -65,17 +64,17 @@ function ensureAddressList(values: string[], fieldName: string): void {
 function ensureInteger(value: number | bigint, fieldName: string, min = 0): bigint {
   if (typeof value === "bigint") {
     if (value < BigInt(min)) {
-      throw new InvalidInputError(`${fieldName} must be greater than or equal to ${min}.`);
+      throw new ValidationError(`${fieldName} must be greater than or equal to ${min}.`);
     }
     return value;
   }
 
   if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value)) {
-    throw new InvalidInputError(`${fieldName} must be an integer.`);
+    throw new ValidationError(`${fieldName} must be an integer.`);
   }
 
   if (value < min) {
-    throw new InvalidInputError(`${fieldName} must be greater than or equal to ${min}.`);
+    throw new ValidationError(`${fieldName} must be greater than or equal to ${min}.`);
   }
 
   return BigInt(value);
@@ -88,7 +87,7 @@ function ensurePositiveInteger(value: number | bigint, fieldName: string): bigin
 function ensureGovParameter(parameter: GovParameter): void {
   const valid = Object.values(GovParameter).includes(parameter);
   if (!valid) {
-    throw new InvalidInputError(
+    throw new ValidationError(
       `parameter must be one of: ${Object.values(GovParameter).join(", ")}.`
     );
   }
@@ -749,7 +748,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
    * @param newAddress The proposed new address, if applicable (e.g., for Treasury).
    * @returns The base64-encoded XDR of the transaction operation.
    *
-   * @throws {InvalidInputError} If inputs are malformed.
+   * @throws {ValidationError} If inputs are malformed.
    *
    * @example
    * ```ts
@@ -1308,14 +1307,16 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     signature: Uint8Array,
     creator: string,
     windowStart: number,
-    windowEnd: number
+    windowEnd: number,
+    sourceAccount: Account
   ): string {
     ensureNonEmptyString(oracleName, "oracleName");
     ensureAddress(creator, "creator");
     ensureInteger(windowStart, "windowStart", 0);
     ensureInteger(windowEnd, "windowEnd", 0);
-    return this.buildTxForContract(
+    return this.buildTxForSubmit(
       this._contractId,
+      sourceAccount,
       "verify_analytics_attestation",
       nativeToScVal(oracleName, { type: "symbol" }),
       nativeToScVal(Buffer.from(reportCbor), { type: "bytes" }),
@@ -1351,7 +1352,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
    * console.log("Deploy Token Op XDR:", txOp);
    * ```
    */
-  deployCreatorToken(params: DeployCreatorTokenParams): string {
+  deployCreatorToken(params: DeployCreatorTokenParams, sourceAccount: Account): string {
     if (!this.tokenFactoryId) {
       throw new ValidationError(
         "tokenFactoryId must be set in ClientConfig to use deployCreatorToken",
@@ -1360,8 +1361,9 @@ export class LinkoraClient extends GeneratedLinkoraClient {
         }
       );
     }
-    return this.buildTxForContract(
+    return this.buildTxForSubmit(
       this.tokenFactoryId,
+      sourceAccount,
       "deploy_creator_token",
       scvAddress(params.deployer),
       scvString(params.name),
@@ -1397,7 +1399,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
    * console.log("Deploy Op:", deployOp, "Profile Op:", profileOp);
    * ```
    */
-  setProfileWithNewToken(params: SetProfileWithNewTokenParams): [string, string] {
+  setProfileWithNewToken(params: SetProfileWithNewTokenParams, sourceAccount: Account): [string, string] {
     if (!this.tokenFactoryId) {
       throw new ValidationError(
         "tokenFactoryId must be set in ClientConfig to use setProfileWithNewToken",
@@ -1409,7 +1411,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     const deployTx = this.deployCreatorToken({
       deployer: params.user,
       ...params.tokenParams,
-    });
+    }, sourceAccount);
     // NOTE: the token address used here is a placeholder; callers should
     // first simulate deployCreatorToken to get the real token address, then
     // call setProfile(user, username, tokenAddress) directly.
@@ -1463,13 +1465,35 @@ export class LinkoraClient extends GeneratedLinkoraClient {
 
   // ── Private helpers ──────────────────────────────────────────────────────────
 
-  private buildTxForContract(contractId: string, method: string, ...args: xdr.ScVal[]): string {
+  /** Build a read-only simulation XDR using a throwaway keypair. Not suitable for submission. */
+  private buildSimTx(contractId: string, method: string, ...args: xdr.ScVal[]): string {
     const contract = new Contract(contractId);
     const op = contract.call(method, ...args);
 
     const source = Keypair.random();
     const account = new Account(source.publicKey(), "0");
     const tx = new TransactionBuilder(account, {
+      fee: "100",
+      networkPassphrase: this._networkPassphrase,
+    })
+      .addOperation(op)
+      .setTimeout(DEFAULT_TIMEOUT)
+      .build();
+
+    return tx.toEnvelope().toXDR("base64");
+  }
+
+  /** Build a submittable write transaction XDR using the caller's actual account. */
+  private buildTxForSubmit(
+    contractId: string,
+    sourceAccount: Account,
+    method: string,
+    ...args: xdr.ScVal[]
+  ): string {
+    const contract = new Contract(contractId);
+    const op = contract.call(method, ...args);
+
+    const tx = new TransactionBuilder(sourceAccount, {
       fee: "100",
       networkPassphrase: this._networkPassphrase,
     })
