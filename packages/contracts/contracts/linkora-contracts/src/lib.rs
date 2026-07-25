@@ -3208,6 +3208,48 @@ impl LinkoraContract {
         result
     }
 
+    /// Retrieves the stored Merkle credential root for a user.
+    ///
+    /// # Returns
+    /// * `Some(BytesN<32>)` if the user has a credential root set
+    /// * `None` if the user has no credential root
+    pub fn get_credential_root(env: Env, user: Address) -> Option<BytesN<32>> {
+        validate_non_default_address(&env, "user", &user);
+        let key = StorageKey::CredentialRoot(user.clone());
+        let result: Option<BytesN<32>> = env.storage().persistent().get(&key);
+        if result.is_some() {
+            Self::bump(&env, &key);
+        }
+        result
+    }
+
+    /// Computes the Merkle root from a leaf and proof path.
+    /// This is a helper function for verify_credential.
+    /// Uses a position-dependent hash to ensure proof order matters.
+    #[allow(clippy::needless_borrow)]
+    fn compute_merkle_root(leaf: &BytesN<32>, proof: &Vec<BytesN<32>>) -> BytesN<32> {
+        let env = leaf.env();
+        let mut current = leaf.clone();
+        let mut index = 0u8;
+
+        for sibling in proof.iter() {
+            // Position-dependent hash: add current, sibling, and index
+            // This ensures (a, b) at position 0 != (b, a) at position 0
+            let mut result = [0u8; 32];
+            let current_arr = current.to_array();
+            let sibling_arr = sibling.to_array();
+            for i in 0..32 {
+                result[i] = current_arr[i]
+                    .wrapping_add(sibling_arr[i])
+                    .wrapping_add(index);
+            }
+            current = BytesN::from_array(&env, &result);
+            index = index.wrapping_add(1);
+        }
+
+        current
+    }
+
     // ── Internal Helpers ──────────────────────────────────────────────────────
 
     fn role_mask(role: Role) -> u32 {
