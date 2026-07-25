@@ -1007,7 +1007,7 @@ impl LinkoraContract {
         );
         Self::require_not_paused(&env);
 
-        if Self::is_blocked(env.clone(), followee.clone(), follower.clone()) {
+        if Self::is_either_blocked(&env, &followee, &follower) {
             panic!("blocked");
         }
 
@@ -1348,6 +1348,12 @@ impl LinkoraContract {
         blocks.contains_key(blocked)
     }
 
+    /// Helper: checks if either user has blocked the other (bidirectional check).
+    fn is_either_blocked(env: &Env, a: &Address, b: &Address) -> bool {
+        Self::is_blocked(env.clone(), a.clone(), b.clone())
+            || Self::is_blocked(env.clone(), b.clone(), a.clone())
+    }
+
     // ── Posts ─────────────────────────────────────────────────────────────────
 
     pub fn create_post(env: Env, author: Address, content: String) -> u64 {
@@ -1517,7 +1523,7 @@ impl LinkoraContract {
             panic!("post not found: {}", post_id);
         });
 
-        if Self::is_blocked(env.clone(), post.author.clone(), tipper.clone()) {
+        if Self::is_either_blocked(&env, &post.author, &tipper) {
             panic!("blocked");
         }
 
