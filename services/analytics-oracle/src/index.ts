@@ -13,9 +13,7 @@ import { rateLimiter } from "./middleware/rate-limiter.js";
 import { createHealthRouter } from "./routes/health.js";
 import { validateParams } from "./middleware/validate.js";
 import { z } from "zod";
-import {
-  notFoundError,
-} from "@linkora/types/src/errors";
+import { notFoundError } from "@linkora/types/src/errors";
 
 ed.etc.sha512Sync = (...m) => sha512(ed.etc.concatBytes(...m));
 
@@ -47,8 +45,8 @@ function generateRequestId(): string {
   return Math.random().toString(36).substring(2) + Date.now().toString(36);
 }
 
-// eslint-disable-next-line @typescript-eslint/no-namespace
 declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Express {
     interface Request {
       requestId: string;
@@ -181,10 +179,7 @@ const creatorParamsSchema = z.object({
   creator: z.string().regex(/^G[A-Z2-7]{55}$/, "Invalid Stellar address format"),
 });
 
-app.get(
-  "/attestations/:creator",
-  validateParams(creatorParamsSchema),
-  (req, res) => {
+app.get("/attestations/:creator", validateParams(creatorParamsSchema), (req, res) => {
   const { creator } = req.params;
   const att = attestationCache.get(creator);
   if (!att) {

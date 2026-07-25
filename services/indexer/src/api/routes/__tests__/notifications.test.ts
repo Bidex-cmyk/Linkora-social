@@ -15,9 +15,7 @@ async function invokeRoute(
   path: string,
   req: Record<string, unknown>
 ) {
-  const layer = router.stack.find(
-    (item: any) => item.route?.path === path
-  );
+  const layer = router.stack.find((item: any) => item.route?.path === path);
   if (!layer) throw new Error(`Route ${path} not found`);
 
   const res = createMockResponse();

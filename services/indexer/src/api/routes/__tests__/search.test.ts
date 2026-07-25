@@ -16,7 +16,9 @@ function makePost(overrides: Partial<Post> = {}): Post {
   };
 }
 
-function makeDb(searchResult: { posts: Post[]; total: number } = { posts: [], total: 0 }): Database {
+function makeDb(
+  searchResult: { posts: Post[]; total: number } = { posts: [], total: 0 }
+): Database {
   return {
     searchPosts: jest.fn().mockResolvedValue(searchResult),
   } as unknown as Database;

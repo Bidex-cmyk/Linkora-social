@@ -14,21 +14,12 @@ export const offsetPaginationSchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
-export const numericIdStringSchema = z
-  .string()
-  .regex(/^\d+$/, "id must be a non-negative integer");
+export const numericIdStringSchema = z.string().regex(/^\d+$/, "id must be a non-negative integer");
 
-export const base64Schema = z
-  .string()
-  .regex(/^[A-Za-z0-9+/]*={0,2}$/, "Invalid base64 format");
+export const base64Schema = z.string().regex(/^[A-Za-z0-9+/]*={0,2}$/, "Invalid base64 format");
 
-export const hex64BytesSchema = z
-  .string()
-  .regex(/^[a-fA-F0-9]{128}$/, "Invalid signature format");
+export const hex64BytesSchema = z.string().regex(/^[a-fA-F0-9]{128}$/, "Invalid signature format");
 
 export const conversationIdSchema = z
   .string()
-  .regex(
-    /^[a-fA-F0-9]{64}$/,
-    "Invalid conversation ID format (must be 64-char hex)"
-  );
+  .regex(/^[a-fA-F0-9]{64}$/, "Invalid conversation ID format (must be 64-char hex)");

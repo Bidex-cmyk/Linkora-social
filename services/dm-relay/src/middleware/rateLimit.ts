@@ -32,7 +32,9 @@ export const authLimiter = rateLimit({
   standardHeaders: "draft-8",
   legacyHeaders: false,
   handler: (_req: Request, res: Response) => {
-    const err = rateLimitedError(`Max ${RATE_LIMIT_AUTH_RPM} requests per minute per authenticated user`);
+    const err = rateLimitedError(
+      `Max ${RATE_LIMIT_AUTH_RPM} requests per minute per authenticated user`
+    );
     res.status(err.statusCode).json(err.toJSON((_req as any).requestId));
   },
 });

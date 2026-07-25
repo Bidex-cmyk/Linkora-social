@@ -28,5 +28,4 @@ export function validate(schema: z.ZodType, target: ValidationTarget) {
 
 export const validateBody = (schema: z.ZodType) => validate(schema, "body");
 export const validateQuery = (schema: z.ZodType) => validate(schema, "query");
-export const validateParams = (schema: z.ZodType) =>
-  validate(schema, "params");
+export const validateParams = (schema: z.ZodType) => validate(schema, "params");

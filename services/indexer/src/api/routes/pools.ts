@@ -5,7 +5,10 @@ import { z } from "zod";
 import { notFoundError, internalError } from "@linkora/types/src/errors";
 
 const poolIdParamsSchema = z.object({
-  id: z.string().min(1).refine((v) => v.trim().length > 0, "id is required"),
+  id: z
+    .string()
+    .min(1)
+    .refine((v) => v.trim().length > 0, "id is required"),
 });
 
 export function createPoolsRouter(db: Database): Router {

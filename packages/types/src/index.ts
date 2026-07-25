@@ -23,11 +23,7 @@ export {
   isAppError,
 } from "./errors";
 
-export type {
-  ErrorCode,
-  ErrorResponseBody,
-  ErrorResponse,
-} from "./errors";
+export type { ErrorCode, ErrorResponseBody, ErrorResponse } from "./errors";
 
 export type {
   Profile,

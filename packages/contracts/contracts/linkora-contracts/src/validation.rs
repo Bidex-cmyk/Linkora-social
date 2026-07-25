@@ -1,11 +1,9 @@
-#![allow(dead_code)]
 use alloc::format;
 use soroban_sdk::{Address, BytesN, Env, String, Vec};
 
 use crate::{GovParameter, ReportStatus};
 
 pub const MAX_NAME_LEN: u32 = 50;
-pub const MAX_BIO_LEN: u32 = 500;
 pub const MAX_CONTENT_LEN: u32 = 2_000;
 pub const MAX_PROTOCOL_AMOUNT: i128 = 1_000_000_000_000_000_000_000_000_000_000_000_000;
 pub const MAX_FEE_BPS: u32 = 10_000;
@@ -47,7 +45,7 @@ pub fn validate_address_list(env: &Env, label: &str, addresses: &Vec<Address>) {
     }
 }
 
-pub fn validate_string_max_len(env: &Env, label: &str, value: &String, max: u32) {
+fn validate_string_max_len(env: &Env, label: &str, value: &String, max: u32) {
     require_with_error!(
         env,
         value.len() <= max,
@@ -61,10 +59,6 @@ pub fn validate_username(env: &Env, username: &String) {
 
 pub fn validate_content(env: &Env, content: &String) {
     validate_string_max_len(env, "content", content, MAX_CONTENT_LEN);
-}
-
-pub fn validate_bio(env: &Env, bio: &String) {
-    validate_string_max_len(env, "bio", bio, MAX_BIO_LEN);
 }
 
 pub fn validate_amount(env: &Env, label: &str, amount: i128) {
@@ -87,10 +81,12 @@ pub fn validate_protocol_fee(env: &Env, fee_bps: u32) {
     validate_u32_range(env, "fee_bps", fee_bps, 0, MAX_FEE_BPS);
 }
 
-pub fn validate_percentage(env: &Env, label: &str, value: u32) {
-    validate_u32_range(env, label, value, 0, 10_000);
-}
-
+/// Exhaustiveness guard for `GovParameter` variants.
+///
+/// This is a compile-time check: if a new variant is added to `GovParameter`,
+/// the match will become non-exhaustive and fail to compile, forcing the
+/// developer to handle it. No runtime validation is performed here — actual
+/// value validation happens in `gov_propose` via `validate_u32_range`.
 pub fn validate_gov_parameter(env: &Env, parameter: &GovParameter) {
     match parameter {
         GovParameter::FeeBps

@@ -20,7 +20,9 @@ export function createPostsRouter(db: Database): Router {
     "/",
     validateQuery(listPostsQuerySchema),
     async (req: Request, res: Response): Promise<void> => {
-      const { author, limit, cursor } = req.query as unknown as z.infer<typeof listPostsQuerySchema>;
+      const { author, limit, cursor } = req.query as unknown as z.infer<
+        typeof listPostsQuerySchema
+      >;
 
       const { posts, total, hasMore } = await db.listPostsCursor({
         author: author || undefined,

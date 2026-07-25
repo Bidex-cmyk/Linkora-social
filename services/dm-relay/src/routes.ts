@@ -91,7 +91,9 @@ function handleRouteError(error: unknown, requestId: string): { status: number; 
     if (error.message.includes("already exists")) {
       return {
         status: 409,
-        body: conflictError("Message index already used for this sender-recipient pair").toJSON(requestId),
+        body: conflictError("Message index already used for this sender-recipient pair").toJSON(
+          requestId
+        ),
       };
     }
 
