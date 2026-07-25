@@ -89,10 +89,15 @@ async function createApp() {
 
   // Rate limiting
   app.use("/api", rateLimitMiddleware);
-  const messageAuth = messageAuthMiddleware(authService);
-  app.use("/api/messages", messageAuth);
 
-  // API routes
+  // API routes with auth middleware applied only to POST /messages
+  const messageAuth = messageAuthMiddleware(authService);
+  app.use("/api", (req, res, next) => {
+    if (req.method === "POST" && req.path === "/messages") {
+      return messageAuth(req, res, next);
+    }
+    next();
+  });
   app.use("/api", createRouter(database, authService));
 
   // ── Health endpoints ───────────────────────────────────────────────────────

@@ -390,6 +390,8 @@ export async function streamEvents(
   let cursor = config.initialCursor ?? 0;
   let startLedger = config.startLedger;
   let pagingCursor: string | undefined;
+  let consecutiveFailures = 0;
+  const circuitBreakerThreshold = 10;
 
   console.log(
     `[stream] Starting from ledger ${startLedger} (cursor ${cursor}), contract=${config.contractId}`
@@ -406,6 +408,8 @@ export async function streamEvents(
         pagingCursor,
         signal
       );
+
+      consecutiveFailures = 0;
 
       if (signal.aborted) break;
 
@@ -481,6 +485,13 @@ export async function streamEvents(
       startLedger = Math.max(latestLedger, cursor + 1);
       await waitWithAbort(poll.next(events.length), signal);
     } catch (err) {
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= circuitBreakerThreshold) {
+        console.error(
+          `[stream] Circuit breaker triggered after ${consecutiveFailures} consecutive failures. Stopping stream.`
+        );
+        break;
+      }
       console.error("[stream] Error processing batch:", err);
       await waitWithAbort(poll.intervalMs, signal);
     }
