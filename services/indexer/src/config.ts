@@ -60,6 +60,10 @@ export interface IndexerConfig {
   minPollIntervalMs: number | undefined;
   maxPollIntervalMs: number | undefined;
 
+  // Database connection pool
+  pgPoolMin: number;
+  pgPoolMax: number;
+
   // Backfill
   backfill: BackfillConfig;
 }
@@ -113,6 +117,9 @@ export function loadConfig(): IndexerConfig {
     maxPollIntervalMs: process.env.MAX_POLL_INTERVAL_MS
       ? parseInt(process.env.MAX_POLL_INTERVAL_MS, 10)
       : undefined,
+
+    pgPoolMin: optionalInt("PG_POOL_MIN", 2),
+    pgPoolMax: optionalInt("PG_POOL_MAX", 10),
 
     backfill: {
       maxDepthLedgers: optionalInt("BACKFILL_MAX_DEPTH_LEDGERS", 10_000),

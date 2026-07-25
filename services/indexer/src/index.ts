@@ -57,6 +57,8 @@ const pgPool = new Pool({
   connectionString: DATABASE_URL,
   statement_timeout: STATEMENT_TIMEOUT_MS,
   lock_timeout: LOCK_TIMEOUT_MS,
+  min: cfg.pgPoolMin,
+  max: cfg.pgPoolMax,
 });
 
 // Wrap pool.query to log slow queries
