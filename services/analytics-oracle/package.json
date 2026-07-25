@@ -2,11 +2,12 @@
   "name": "@linkora/analytics-oracle",
   "version": "0.1.0",
   "type": "module",
-  "description": "Linkora analytics oracle — signs creator analytics reports with Ed25519 and submits attestations on-chain",
+  "description": "Linkora analytics oracle \u2014 signs creator analytics reports with Ed25519 and submits attestations on-chain",
   "private": true,
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
+    "typecheck": "tsc --noEmit",
     "dev": "ts-node src/index.ts",
     "test": "NODE_OPTIONS=--experimental-vm-modules jest"
   },

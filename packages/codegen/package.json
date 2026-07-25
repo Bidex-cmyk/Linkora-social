@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "typecheck": "tsc --noEmit",
     "generate": "tsx generate.ts && prettier --write \"$(cd ../../ && pwd)/packages/sdk/src/generated/*.ts\""
   },
   "dependencies": {

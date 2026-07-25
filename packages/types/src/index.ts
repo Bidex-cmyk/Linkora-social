@@ -6,6 +6,19 @@ export {
   base64Schema,
   hex64BytesSchema,
   conversationIdSchema,
+  ProfileSchema,
+  PostSchema,
+  PoolSchema,
+  GovernanceProposalSchema,
+  ReportSchema,
+} from "./schemas";
+
+export type {
+  ProfileInput,
+  PostInput,
+  PoolInput,
+  GovernanceProposalInput,
+  ReportInput,
 } from "./schemas";
 
 export {

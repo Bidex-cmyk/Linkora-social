@@ -37,6 +37,7 @@
     "lint": "eslint . --ext .ts,.tsx",
     "format": "prettier --write \"src/**/*.{ts,tsx}\"",
     "build": "tsc --outDir dist --declaration --declarationMap --sourceMap --module commonjs --target ES2020 --moduleResolution node --esModuleInterop --skipLibCheck",
+    "typecheck": "tsc --noEmit",
     "docs": "typedoc --out docs src/index.ts --tsconfig tsconfig.json",
     "test": "jest",
     "test:e2e": "jest --config jest.e2e.config.js"

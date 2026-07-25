@@ -63,8 +63,10 @@ export class RelayClient {
    */
   connectWs(address: string) {
     if (this.ws) return;
-    const wsUrl = this.baseUrl.replace(/^http/, "ws") + `/ws?address=${address}`;
-    this.ws = new WebSocket(wsUrl);
+    const wsBase = this.baseUrl.replace(/^http/, "ws");
+    const wsUrl = new URL("/ws", wsBase);
+    wsUrl.searchParams.set("address", address);
+    this.ws = new WebSocket(wsUrl.toString());
     this.ws.onmessage = (event: MessageEvent) => {
       try {
         const payload = JSON.parse(event.data as string);
