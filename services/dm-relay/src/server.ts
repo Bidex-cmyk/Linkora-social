@@ -52,6 +52,7 @@ let shuttingDown = false;
 
 async function createApp() {
   const app = express();
+  app.set("trust proxy", 1); // trust first proxy
 
   // Security middleware
   app.use(
