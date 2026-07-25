@@ -3,6 +3,7 @@ use soroban_sdk::{Address, BytesN, Env, String, Vec};
 
 use crate::{GovParameter, ReportStatus};
 
+pub const MIN_NAME_LEN: u32 = 1;
 pub const MAX_NAME_LEN: u32 = 50;
 pub const MAX_CONTENT_LEN: u32 = 2_000;
 pub const MAX_PROTOCOL_AMOUNT: i128 = 1_000_000_000_000_000_000_000_000_000_000_000_000;

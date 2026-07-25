@@ -183,10 +183,10 @@ class Database {
   async deleteExpiredMessages(ttlDays: number): Promise<number> {
     const query = `
       DELETE FROM dm_messages
-      WHERE created_at < NOW() - INTERVAL '${ttlDays} days'
+      WHERE created_at < NOW() - $1::integer * INTERVAL '1 day'
     `;
 
-    const result = await this.pool.query(query);
+    const result = await this.pool.query(query, [ttlDays]);
     return result.rowCount || 0;
   }
 
@@ -261,10 +261,10 @@ class Database {
     const hours = Math.max(0, Math.floor(ttlHours));
     const query = `
       DELETE FROM message_idempotency
-      WHERE created_at < NOW() - INTERVAL '${hours} hours'
+      WHERE created_at < NOW() - $1::integer * INTERVAL '1 hour'
     `;
 
-    const result = await this.pool.query(query);
+    const result = await this.pool.query(query, [hours]);
     return result.rowCount || 0;
   }
 
