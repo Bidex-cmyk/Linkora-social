@@ -10,7 +10,7 @@ import { fetchCreatorStats } from "./db.js";
 import { submitAttestation } from "./submitter.js";
 import { AnalyticsReport, SignedAttestation } from "./types.js";
 import { logger } from "./logger.js";
-import { rateLimiter } from "./middleware/rate-limiter.js";
+import { rateLimiter, initRateLimiter } from "./middleware/rate-limiter.js";
 import { createHealthRouter } from "./routes/health.js";
 import { validateParams } from "./middleware/validate.js";
 import { z } from "zod";
@@ -241,6 +241,9 @@ async function main(): Promise<void> {
     },
     "Oracle starting"
   );
+
+  // Initialise rate limiter (upgrades to Redis store when REDIS_URL is set).
+  await initRateLimiter();
 
   app.listen(PORT, () => {
     logger.info({ port: PORT }, "Oracle API listening");

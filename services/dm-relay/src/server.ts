@@ -24,7 +24,7 @@ import {
   validateContentType,
 } from "./middleware";
 import { messageAuthMiddleware } from "./middleware/auth";
-import { rateLimitMiddleware } from "./middleware/rateLimit";
+import { rateLimitMiddleware, initRateLimiters } from "./middleware/rateLimit";
 import { createHealthRouter } from "./routes/health";
 import { logger } from "./logger";
 
@@ -81,6 +81,9 @@ async function createApp() {
     config.idempotencyTtlHours
   );
   cleanupService.start();
+
+  // Initialise rate limiters (upgrades to Redis store when REDIS_URL is set).
+  await initRateLimiters();
 
   // Custom middleware
   app.use(requestIdMiddleware);
