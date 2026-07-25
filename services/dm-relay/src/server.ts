@@ -15,6 +15,7 @@ import { Database } from "./database";
 import { AuthService } from "./auth";
 import { CleanupService } from "./cleanup";
 import { createRouter, registerWsClient } from "./routes";
+import { loadConfig } from "./config";
 import {
   requestIdMiddleware,
   requestLoggerMiddleware,
@@ -35,16 +36,7 @@ const COMMIT_SHA = process.env.COMMIT_SHA ?? "unknown";
 const startTime = Date.now();
 
 // Configuration
-const config = {
-  port: parseInt(process.env.PORT || "3001"),
-  nodeEnv: process.env.NODE_ENV || "development",
-  databaseUrl: process.env.DATABASE_URL || "postgresql://localhost:5432/linkora_dm_relay",
-  corsOrigin: process.env.CORS_ORIGIN?.split(",") || ["http://localhost:3000"],
-  messageTtlDays: parseInt(process.env.MESSAGE_TTL_DAYS || "7"),
-  maxTimestampSkew: parseInt(process.env.MAX_TIMESTAMP_SKEW || "30"),
-  stellarNetwork: process.env.STELLAR_NETWORK || "Testnet",
-  idempotencyTtlHours: parseInt(process.env.IDEMPOTENCY_TTL_HOURS || "24"),
-};
+const config = loadConfig();
 
 let started = false;
 let startedAt: string | null = null;
