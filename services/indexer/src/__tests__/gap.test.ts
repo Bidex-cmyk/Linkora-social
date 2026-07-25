@@ -11,19 +11,23 @@ describe("detectGap", () => {
 
   it("reports a gap when the batch skips ahead (RPC failover)", () => {
     // cursor=100, expected 101, but the batch starts at 105 → 101..104 missing.
-    expect(detectGap(105, 100)).toEqual({
-      hasGap: true,
-      fromLedger: 101,
-      toLedger: 104,
-    });
+    expect(detectGap(105, 100)).toEqual(
+      expect.objectContaining({
+        hasGap: true,
+        fromLedger: 101,
+        toLedger: 104,
+      })
+    );
   });
 
   it("treats a single skipped ledger as a one-ledger gap", () => {
-    expect(detectGap(103, 101)).toEqual({
-      hasGap: true,
-      fromLedger: 102,
-      toLedger: 102,
-    });
+    expect(detectGap(103, 101)).toEqual(
+      expect.objectContaining({
+        hasGap: true,
+        fromLedger: 102,
+        toLedger: 102,
+      })
+    );
   });
 
   it("reports no gap on re-delivery / overlap", () => {

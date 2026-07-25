@@ -1,33 +1,21 @@
-/**
- * Linkora Analytics Oracle
- *
- * Runs on a ledger-window schedule:
- *   1. Queries the indexer PostgreSQL DB for per-creator activity in the window.
- *   2. Encodes each creator's analytics as a CBOR report.
- *   3. Signs the SHA-256 of the CBOR with the oracle Ed25519 key.
- *   4. Submits `verify_analytics_attestation` to the Soroban contract.
- *   5. Caches the latest signed attestation per creator.
- *
- * Exposes GET /attestations/:creator returning the latest signed report + signature.
- */
-
-import express from "express";
+import express, { Request, Response, NextFunction } from "express";
 import { Pool } from "pg";
 import { Keypair } from "@stellar/stellar-sdk";
 import * as ed from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha512";
-import { rateLimit } from "express-rate-limit";
 import { encodeReport } from "./codec.js";
 import { signReport } from "./signer.js";
 import { fetchCreatorStats } from "./db.js";
 import { submitAttestation } from "./submitter.js";
 import { AnalyticsReport, SignedAttestation } from "./types.js";
 import { logger } from "./logger.js";
+import { rateLimiter } from "./middleware/rate-limiter.js";
+import { createHealthRouter } from "./routes/health.js";
+import { validateParams } from "./middleware/validate.js";
+import { z } from "zod";
+import { notFoundError } from "@linkora/types/src/errors";
 
-// Wire sha512 for @noble/ed25519 synchronous API
 ed.etc.sha512Sync = (...m) => sha512(ed.etc.concatBytes(...m));
-
-// ── Config ────────────────────────────────────────────────────────────────────
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -42,35 +30,46 @@ const ORACLE_PRIVATE_KEY_HEX = requireEnv("ORACLE_PRIVATE_KEY_HEX");
 const ORACLE_NAME = process.env["ORACLE_NAME"] ?? "default";
 const WINDOW_LEDGERS = BigInt(process.env["WINDOW_LEDGERS"] ?? "1000");
 const PORT = parseInt(process.env["PORT"] ?? "4000", 10);
-const NETWORK_PASSPHRASE =
-  process.env["NETWORK_PASSPHRASE"] ?? "Test SDF Network ; September 2015";
-
-// ── Init ──────────────────────────────────────────────────────────────────────
+const NETWORK_PASSPHRASE = process.env["NETWORK_PASSPHRASE"] ?? "Test SDF Network ; September 2015";
 
 const oraclePrivateKey = Buffer.from(ORACLE_PRIVATE_KEY_HEX, "hex");
-// Stellar keypair derived from the same 32-byte seed for fee payment.
 const oracleKeypair = Keypair.fromRawEd25519Seed(oraclePrivateKey);
 
 const db = new Pool({ connectionString: DATABASE_URL });
 
-// In-memory cache: creator address -> latest attestation
 const attestationCache = new Map<string, SignedAttestation>();
-
-// ── Analytics loop ────────────────────────────────────────────────────────────
 
 let lastWindowEnd = BigInt(0);
 
+function generateRequestId(): string {
+  return Math.random().toString(36).substring(2) + Date.now().toString(36);
+}
+
+declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace
+  namespace Express {
+    interface Request {
+      requestId: string;
+    }
+  }
+}
+
 async function runWindow(windowStart: bigint, windowEnd: bigint): Promise<void> {
-  logger.info({ windowStart: windowStart.toString(), windowEnd: windowEnd.toString() }, "Computing analytics for ledger window");
+  logger.info(
+    { windowStart: windowStart.toString(), windowEnd: windowEnd.toString() },
+    "Computing analytics for ledger window"
+  );
 
   const stats = await fetchCreatorStats(db, windowStart, windowEnd);
   if (stats.length === 0) {
-    logger.info({ windowStart: windowStart.toString(), windowEnd: windowEnd.toString() }, "No active creators in window, skipping");
+    logger.info(
+      { windowStart: windowStart.toString(), windowEnd: windowEnd.toString() },
+      "No active creators in window, skipping"
+    );
     return;
   }
 
   for (const s of stats) {
-    // Decode the creator's Stellar address to its raw 32-byte public key.
     let creatorBytes: Uint8Array;
     try {
       creatorBytes = Keypair.fromPublicKey(s.creatorAddress).rawPublicKey();
@@ -93,7 +92,6 @@ async function runWindow(windowStart: bigint, windowEnd: bigint): Promise<void> 
     const reportCbor = encodeReport(report);
     const { signature, reportHash } = signReport(reportCbor, oraclePrivateKey);
 
-    // Submit on-chain.
     let txHash: string;
     try {
       txHash = await submitAttestation(
@@ -114,7 +112,6 @@ async function runWindow(windowStart: bigint, windowEnd: bigint): Promise<void> 
       continue;
     }
 
-    // Cache for API.
     attestationCache.set(s.creatorAddress, {
       oracleName: ORACLE_NAME,
       reportCbor,
@@ -128,7 +125,8 @@ async function runWindow(windowStart: bigint, windowEnd: bigint): Promise<void> 
 }
 
 async function scheduleLoop(currentLedger: bigint): Promise<void> {
-  const windowStart = lastWindowEnd === BigInt(0) ? currentLedger - WINDOW_LEDGERS : lastWindowEnd + BigInt(1);
+  const windowStart =
+    lastWindowEnd === BigInt(0) ? currentLedger - WINDOW_LEDGERS : lastWindowEnd + BigInt(1);
   const windowEnd = currentLedger;
 
   if (windowEnd <= windowStart) {
@@ -139,82 +137,55 @@ async function scheduleLoop(currentLedger: bigint): Promise<void> {
   await runWindow(windowStart, windowEnd);
 }
 
-// ── REST API ──────────────────────────────────────────────────────────────────
-
 const app = express();
-const SERVICE_VERSION = process.env["npm_package_version"] ?? "0.1.0";
-const COMMIT_SHA = process.env["COMMIT_SHA"] ?? "unknown";
 const startTime = Date.now();
 
+let started = false;
+let startedAt: string | null = null;
+
+function markStarted(): void {
+  if (started) return;
+  started = true;
+  startedAt = new Date().toISOString();
+}
+
+function requestIdMiddleware(req: Request, _res: Response, next: NextFunction): void {
+  const existing = req.headers["x-request-id"];
+  const id = (typeof existing === "string" ? existing : null) ?? generateRequestId();
+  req.requestId = id;
+  next();
+}
+
 // ── Health endpoints ──────────────────────────────────────────────────────────
+// Liveness / readiness / startup probes — see routes/health.ts for details.
 
-app.get("/health", async (_req, res) => {
-  const uptime = Math.floor((Date.now() - startTime) / 1000);
+app.use(requestIdMiddleware);
 
-  let dbStatus = "disconnected";
-  try { await db.query("SELECT 1"); dbStatus = "connected"; } catch { /* */ }
+app.use(
+  createHealthRouter({
+    db,
+    rpcUrl: SOROBAN_RPC_URL,
+    startTime,
+    isStarted: () => started,
+    startedAt: () => startedAt,
+  })
+);
 
-  let rpcStatus = "unreachable";
-  try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 3000);
-    await fetch(SOROBAN_RPC_URL, {
-      method: "POST", signal: ctrl.signal,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getLatestLedger", params: [] }),
-    }).finally(() => clearTimeout(t));
-    rpcStatus = "reachable";
-  } catch { /* */ }
+// Per-IP rate limiting applied to attestation-serving endpoints. See
+// services/analytics-oracle/src/middleware/rate-limiter.ts and config.ts.
+app.use(rateLimiter);
 
-  const ok = dbStatus === "connected" && rpcStatus === "reachable";
-  res.status(ok ? 200 : 503).json({
-    status: ok ? "ok" : "degraded",
-    uptime,
-    version: SERVICE_VERSION,
-    commit: COMMIT_SHA,
-    db: dbStatus,
-    rpc: rpcStatus,
-  });
+const creatorParamsSchema = z.object({
+  creator: z.string().regex(/^G[A-Z2-7]{55}$/, "Invalid Stellar address format"),
 });
 
-app.get("/health/ready", async (_req, res) => {
-  try {
-    await db.query("SELECT 1");
-    res.json({ status: "ready" });
-  } catch {
-    res.status(503).json({ status: "not ready", reason: "db unavailable" });
-  }
-});
-
-app.get("/health/live", (_req, res) => {
-  res.json({ status: "live" });
-});
-
-const RATE_LIMIT_RPM = parseInt(process.env.RATE_LIMIT_RPM || "100", 10);
-
-const apiLimiter = rateLimit({
-  windowMs: 60_000,
-  limit: RATE_LIMIT_RPM,
-  standardHeaders: "draft-8",
-  legacyHeaders: false,
-  handler: (_req, res) => {
-    res.status(429).json({
-      error: "Too Many Requests",
-      code: "RATE_LIMIT_EXCEEDED",
-    });
-  },
-});
-
-app.use(apiLimiter);
-
-/**
- * GET /attestations/:creator
- * Returns the latest signed attestation for a creator address.
- */
-app.get("/attestations/:creator", (req, res) => {
-  const att = attestationCache.get(req.params["creator"] ?? "");
+app.get("/attestations/:creator", validateParams(creatorParamsSchema), (req, res) => {
+  const { creator } = req.params;
+  const att = attestationCache.get(creator);
   if (!att) {
-    res.status(404).json({ error: "no attestation found for this creator" });
+    const err = notFoundError("no attestation found for this creator");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    res.status(err.statusCode).json(err.toJSON((req as any).requestId));
     return;
   }
 
@@ -238,18 +209,42 @@ app.get("/attestations/:creator", (req, res) => {
   });
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok" }));
-
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars
+app.use((err: Error, req: any, res: Response, _next: NextFunction): void => {
+  logger.error({ requestId: req.requestId, err }, "Unhandled error");
+
+  const statusCode = typeof err.statusCode === "number" ? err.statusCode : 500;
+  const code = err.code || "INTERNAL_ERROR";
+  const message = process.env.NODE_ENV === "development" ? err.message : "Internal server error";
+
+  res.status(statusCode).json({
+    error: {
+      code,
+      message,
+      requestId: req.requestId,
+    },
+  });
+});
 
 async function main(): Promise<void> {
   const pubkeyHex = Buffer.from(ed.getPublicKey(oraclePrivateKey)).toString("hex");
-  logger.info({ pubkeyHex, stellarAddress: oracleKeypair.publicKey(), contractId: CONTRACT_ID, windowLedgers: WINDOW_LEDGERS.toString() }, "Oracle starting");
+  logger.info(
+    {
+      pubkeyHex,
+      stellarAddress: oracleKeypair.publicKey(),
+      contractId: CONTRACT_ID,
+      windowLedgers: WINDOW_LEDGERS.toString(),
+    },
+    "Oracle starting"
+  );
 
-  app.listen(PORT, () => logger.info({ port: PORT }, "Oracle API listening"));
+  app.listen(PORT, () => {
+    logger.info({ port: PORT }, "Oracle API listening");
+    markStarted();
+  });
 
-  // Poll every WINDOW_LEDGERS * 5s for simplicity. In production, subscribe
-  // to the indexer's event bus WebSocket for exact ledger-close events.
   const pollMs = Number(WINDOW_LEDGERS) * 5_000;
   logger.info({ pollIntervalMs: pollMs }, "Oracle polling interval set");
 
@@ -265,7 +260,6 @@ async function main(): Promise<void> {
     }
   };
 
-  // Run once immediately, then on interval.
   await tick();
   setInterval(tick, pollMs);
 }
