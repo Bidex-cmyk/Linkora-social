@@ -3,6 +3,7 @@ import { Pool } from "pg";
 import { Keypair } from "@stellar/stellar-sdk";
 import * as ed from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha512";
+import { randomUUID } from "crypto";
 import { encodeReport } from "./codec.js";
 import { signReport } from "./signer.js";
 import { fetchCreatorStats } from "./db.js";
@@ -42,7 +43,7 @@ const attestationCache = new Map<string, SignedAttestation>();
 let lastWindowEnd = BigInt(0);
 
 function generateRequestId(): string {
-  return Math.random().toString(36).substring(2) + Date.now().toString(36);
+  return randomUUID();
 }
 
 declare global {
