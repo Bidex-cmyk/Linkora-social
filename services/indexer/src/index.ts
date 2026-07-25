@@ -33,6 +33,8 @@ import { ScoreRefreshService } from "./score-refresh";
 import { HealthMonitor } from "./services/health-monitor";
 import { BackfillCoordinator } from "./services/backfill-coordinator";
 import { loadConfig } from "./config";
+import { GracefulShutdown } from "./graceful-shutdown";
+import { logger } from "./logger";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -212,7 +214,10 @@ function toIngestEvent(event: RawEvent): IngestEvent {
 // ── Graceful shutdown ────────────────────────────────────────────────────────
 
 const healthMonitor = new HealthMonitor(pgPool, STELLAR_RPC_URL);
-const apiApp = createApp(new PostgresDatabase(pgPool), pgPool, healthMonitor);
+const abortController = new AbortController();
+const shutdownFlag = { active: false };
+
+const apiApp = createApp(new PostgresDatabase(pgPool), pgPool, healthMonitor, shutdownFlag);
 const httpServer = http.createServer(apiApp);
 
 const wsHandle = attachWebSocketServer(httpServer, bus, { path: "/ws" });
@@ -220,22 +225,19 @@ const detachNotificationDispatcher = attachNotificationDispatcher(bus, pgPool, n
 
 // ── Lifecycle control ────────────────────────────────────────────────────────
 
-const abortController = new AbortController();
-let shuttingDown = false;
-
-async function shutdown(signal: string): Promise<void> {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  console.log(`[indexer] Received ${signal}, shutting down…`);
-  healthMonitor.markShuttingDown();
-  abortController.abort();
-  scoreRefreshService.stop();
-  detachNotificationDispatcher();
-  await wsHandle.close();
-  httpServer.close();
-  await pgPool.end();
-  console.log("[indexer] Shutdown complete.");
-}
+const gracefulShutdown = new GracefulShutdown({
+  httpServer,
+  pgPool,
+  wsHandle,
+  abortController,
+  scoreRefreshStop: () => scoreRefreshService.stop(),
+  detachNotificationDispatcher,
+  onSignal: (signal) => {
+    logger.info({ signal }, "Graceful shutdown initiated");
+    healthMonitor.markShuttingDown();
+  },
+  shutdownFlag,
+});
 
 gracefulShutdown.registerSignals();
 
@@ -379,7 +381,7 @@ async function main(): Promise<void> {
   );
 
   logger.info("Event stream ended, initiating shutdown");
-  await gracefulShutdown.shutdown("stream_end");
+  await gracefulShutdown.shutdown("STREAM_END");
 }
 
 main().catch((err) => {

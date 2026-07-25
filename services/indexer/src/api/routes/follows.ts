@@ -19,14 +19,20 @@ export function createFollowsRouter(db: Database): Router {
       const { address } = req.params;
       const { limit, cursor } = req.query as unknown as z.infer<typeof cursorPaginationSchema>;
 
-      const { followers, total, nextCursor } = await db.getFollowers(address, { limit, cursor });
+      // Convert cursor to offset (cursor represents the offset for pagination)
+      const offset = cursor ? parseInt(cursor, 10) : 0;
+      const { followers, total } = await db.getFollowers(address, limit, offset);
+
+      // Calculate next cursor based on current offset + results count
+      const nextCursor = offset + followers.length < total ? (offset + limit).toString() : null;
+
       res.json({
         address,
         followers,
         total,
         limit,
         cursor: cursor ?? null,
-        next_cursor: nextCursor ?? null,
+        next_cursor: nextCursor,
       });
     }
   );
@@ -39,14 +45,20 @@ export function createFollowsRouter(db: Database): Router {
       const { address } = req.params;
       const { limit, cursor } = req.query as unknown as z.infer<typeof cursorPaginationSchema>;
 
-      const { following, total, nextCursor } = await db.getFollowing(address, { limit, cursor });
+      // Convert cursor to offset (cursor represents the offset for pagination)
+      const offset = cursor ? parseInt(cursor, 10) : 0;
+      const { following, total } = await db.getFollowing(address, limit, offset);
+
+      // Calculate next cursor based on current offset + results count
+      const nextCursor = offset + following.length < total ? (offset + limit).toString() : null;
+
       res.json({
         address,
         following,
         total,
         limit,
         cursor: cursor ?? null,
-        next_cursor: nextCursor ?? null,
+        next_cursor: nextCursor,
       });
     }
   );
