@@ -172,7 +172,7 @@ function toIngestEvent(event: RawEvent): IngestEvent {
   };
 }
 
-// ── HTTP + WebSocket server ──────────────────────────────────────────────────
+// ── Graceful shutdown ────────────────────────────────────────────────────────
 
 const healthMonitor = new HealthMonitor(pgPool, STELLAR_RPC_URL);
 const apiApp = createApp(new PostgresDatabase(pgPool), pgPool, healthMonitor);
@@ -200,16 +200,16 @@ async function shutdown(signal: string): Promise<void> {
   console.log("[indexer] Shutdown complete.");
 }
 
-process.on("SIGTERM", () => void shutdown("SIGTERM"));
-process.on("SIGINT", () => void shutdown("SIGINT"));
+gracefulShutdown.registerSignals();
 
 // ── Core runner ──────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  console.log("[indexer] Starting Linkora indexer");
-  console.log(`[indexer] RPC:        ${STELLAR_RPC_URL}`);
-  console.log(`[indexer] Contract:   ${CONTRACT_ID}`);
-  console.log(`[indexer] From ledger: ${START_LEDGER}`);
+  logger.info("Starting Linkora indexer");
+  logger.info(
+    { rpcUrl: STELLAR_RPC_URL, contractId: CONTRACT_ID, startLedger: START_LEDGER },
+    "Config"
+  );
 
   await ensureSchema();
 
@@ -306,7 +306,7 @@ async function main(): Promise<void> {
         }
       }
     } catch (err) {
-      console.warn("[indexer] Startup gap check failed (continuing):", err);
+      logger.warn({ err }, "Startup gap check failed (continuing)");
     }
   }
 
@@ -341,14 +341,11 @@ async function main(): Promise<void> {
     abortController.signal
   );
 
-  await wsHandle.close();
-  detachNotificationDispatcher();
-  httpServer.close();
-  await pgPool.end();
-  console.log("[indexer] Shutdown complete.");
+  logger.info("Event stream ended, initiating shutdown");
+  await gracefulShutdown.shutdown("stream_end");
 }
 
 main().catch((err) => {
-  console.error("[indexer] Fatal error:", err);
+  logger.error({ err }, "Fatal error");
   process.exit(1);
 });
