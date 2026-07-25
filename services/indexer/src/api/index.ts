@@ -15,6 +15,7 @@ import { createNotificationsRouter } from "./routes/notifications";
 import { createGovernanceRouter } from "./routes/governance";
 import { createUsersRouter } from "./routes/users";
 import { createFeedRouter } from "./routes/feed";
+import { createSearchRouter } from "./routes/search";
 import { isFenced } from "../gossip";
 import { getBackfillState } from "../stream";
 import {
@@ -55,7 +56,8 @@ function corsMiddleware(req: Request, res: Response, next: NextFunction): void {
 export function createApp(
   db: Database,
   pg?: PgPool,
-  healthMonitor?: HealthMonitor
+  healthMonitor?: HealthMonitor,
+  shutdownState?: { active: boolean }
 ): express.Application {
   const app = express();
   app.set("trust proxy", 1); // trust first proxy
@@ -70,7 +72,7 @@ export function createApp(
     healthMonitor ?? (pg ? new HealthMonitor(pg, process.env.STELLAR_RPC_URL ?? "") : undefined);
 
   app.get("/health", async (_req: Request, res: Response): Promise<void> => {
-    if (shutdownState?.isShuttingDown()) {
+    if (shutdownState?.active) {
       res.status(503).json({
         status: "shutting_down",
         uptime: Math.floor((Date.now() - startTime) / 1000),
@@ -144,6 +146,7 @@ export function createApp(
 
   app.use("/api/profiles", createProfilesRouter(db));
   app.use("/api/posts", createPostsRouter(db));
+  app.use("/api/search", createSearchRouter(db));
   app.use("/api/follows", createFollowsRouter(db));
   app.use("/api/pools", createPoolsRouter(db));
   app.use("/api/governance", createGovernanceRouter(db));
