@@ -53,18 +53,6 @@ export class CooldownError extends LinkoraError {
 }
 
 /**
- * Thrown when input parameters fail pre-flight validation (invalid username, post content
- * length limits, etc.).
- *
- * @deprecated Use ValidationError instead.
- */
-export class InvalidInputError extends LinkoraError {
-  constructor(message: string, details?: Record<string, unknown>, originalError?: unknown) {
-    super(message, "INVALID_INPUT", details, originalError);
-  }
-}
-
-/**
  * Thrown when a mini-app manifest fails JSON schema validation.
  */
 export class InvalidManifestError extends LinkoraError {
@@ -96,6 +84,15 @@ export class SimulationError extends LinkoraError {
 export class ValidationError extends LinkoraError {
   constructor(message: string, details?: Record<string, unknown>, originalError?: unknown) {
     super(message, "VALIDATION_ERROR", details, originalError);
+  }
+}
+
+/**
+ * @deprecated Use ValidationError instead. Kept as an alias for backward compatibility.
+ */
+export class InvalidInputError extends ValidationError {
+  constructor(message: string, details?: Record<string, unknown>, originalError?: unknown) {
+    super(message, details, originalError);
   }
 }
 
