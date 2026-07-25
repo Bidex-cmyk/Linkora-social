@@ -5,7 +5,7 @@
  * access to the plaintext content. Authentication is via Stellar signatures.
  */
 
-import { Keypair } from "@stellar/stellar-sdk";
+import { Keypair } from "@stellar/stellar-base";
 import { sha256 } from "@noble/hashes/sha256";
 
 export interface RelayMessage {
@@ -53,9 +53,12 @@ export class RelayClient {
   private baseUrl: string;
   private ws: WebSocket | null = null;
   private messageListeners: Set<(payload: Record<string, unknown>) => void> = new Set();
+  private reconnectAttempts: number = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private wsAddress: string = "";
 
   constructor(baseUrl: string) {
-    this.baseUrl = baseUrl.replace(/\/$/, ""); // Remove trailing slash
+    this.baseUrl = baseUrl.replace(/\/$/, "");
   }
 
   /**
@@ -63,17 +66,35 @@ export class RelayClient {
    */
   connectWs(address: string) {
     if (this.ws) return;
+    this.wsAddress = address;
     const wsUrl = this.baseUrl.replace(/^http/, "ws") + `/ws?address=${address}`;
     this.ws = new WebSocket(wsUrl);
-    this.ws.onmessage = (event) => {
+    this.ws.onopen = () => {
+      this.reconnectAttempts = 0;
+    };
+    this.ws.onmessage = (event: MessageEvent) => {
       try {
         const payload = JSON.parse(event.data as string);
         this.messageListeners.forEach((listener) => listener(payload));
       } catch (_e) {}
     };
+    this.ws.onerror = () => {
+      this.ws?.close();
+    };
     this.ws.onclose = () => {
       this.ws = null;
+      this.scheduleReconnect();
     };
+  }
+
+  private scheduleReconnect() {
+    if (this.reconnectTimer) return;
+    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+    this.reconnectAttempts++;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connectWs(this.wsAddress);
+    }, delay);
   }
 
   onMessage(listener: (payload: Record<string, unknown>) => void) {

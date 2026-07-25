@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import { axe } from "jest-axe";
 import { NotificationsSection } from "./NotificationsSection";
 
@@ -72,7 +72,9 @@ describe("NotificationsSection", () => {
     render(<NotificationsSection />);
 
     const pushToggle = screen.getByRole("switch", { checked: false });
-    fireEvent.click(pushToggle);
+    await act(async () => {
+      fireEvent.click(pushToggle);
+    });
 
     expect(mockRequestPermission).toHaveBeenCalled();
   });

@@ -1,3 +1,43 @@
+export {
+  stellarAddressSchema,
+  cursorPaginationSchema,
+  offsetPaginationSchema,
+  numericIdStringSchema,
+  base64Schema,
+  hex64BytesSchema,
+  conversationIdSchema,
+  ProfileSchema,
+  PostSchema,
+  PoolSchema,
+  GovernanceProposalSchema,
+  ReportSchema,
+} from "./schemas";
+
+export type {
+  ProfileInput,
+  PostInput,
+  PoolInput,
+  GovernanceProposalInput,
+  ReportInput,
+} from "./schemas";
+
+export {
+  AppError,
+  ErrorCodes,
+  ErrorStatusMap,
+  validationError,
+  notFoundError,
+  unauthorizedError,
+  forbiddenError,
+  conflictError,
+  rateLimitedError,
+  internalError,
+  serviceUnavailableError,
+  isAppError,
+} from "./errors";
+
+export type { ErrorCode, ErrorResponseBody, ErrorResponse } from "./errors";
+
 export type {
   Profile,
   Post,
@@ -37,6 +77,6 @@ export type {
   GovConfig,
 } from "linkora-sdk";
 
-export type { GeneratedLinkoraClient, LinkoraEvent as LinkoraEventUnion } from "linkora-sdk";
+export type { LinkoraEvent as LinkoraEventUnion } from "linkora-sdk";
 
 export type { ClientConfig, LinkoraClient } from "linkora-sdk";

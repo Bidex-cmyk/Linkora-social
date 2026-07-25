@@ -2,11 +2,12 @@
   "name": "@linkora/analytics-oracle",
   "version": "0.1.0",
   "type": "module",
-  "description": "Linkora analytics oracle — signs creator analytics reports with Ed25519 and submits attestations on-chain",
+  "description": "Linkora analytics oracle \u2014 signs creator analytics reports with Ed25519 and submits attestations on-chain",
   "private": true,
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
+    "typecheck": "tsc --noEmit",
     "dev": "ts-node src/index.ts",
     "test": "NODE_OPTIONS=--experimental-vm-modules jest"
   },
@@ -16,8 +17,11 @@
     "@stellar/stellar-sdk": "13.1.0",
     "cbor-x": "1.5.9",
     "express": "4.21.2",
+    "@linkora/types": "workspace:*",
+    "express-rate-limit": "^7.3.1",
     "pg": "8.13.3",
-    "pino": "^10.3.1"
+    "pino": "^10.3.1",
+    "zod": "^3.24.4"
   },
   "devDependencies": {
     "@types/express": "5.0.3",

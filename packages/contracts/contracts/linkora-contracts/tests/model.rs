@@ -44,6 +44,9 @@ pub struct ModelProposal {
     pub votes_against: u32,
     pub created_ledger: u64,
     pub time_lock_ledgers: u32,
+    pub vote_window_ledgers: u32,
+    pub quorum: u32,
+    pub quorum_decay_rate_bps: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -319,6 +322,9 @@ impl ContractModel {
                 votes_against: 0,
                 created_ledger: 0,
                 time_lock_ledgers: self.time_lock_ledgers,
+                vote_window_ledgers: self.vote_window_ledgers,
+                quorum: self.quorum,
+                quorum_decay_rate_bps: 0,
             },
         );
 
@@ -336,8 +342,8 @@ impl ContractModel {
             .get(&proposal_id)
             .ok_or("proposal not found")?;
 
-        // Check time-lock using snapshotted value
-        let vote_end = proposal.created_ledger + self.vote_window_ledgers as u64;
+        // Use snapshotted vote_window_ledgers from the proposal
+        let vote_end = proposal.created_ledger + proposal.vote_window_ledgers as u64;
         let execution_after = vote_end + proposal.time_lock_ledgers as u64;
 
         if current_ledger < execution_after {

@@ -4,9 +4,17 @@
  * Tracks process-level lifecycle state (started, shutting down) and runs
  * downstream dependency checks (database, Stellar RPC, event stream) with
  * latency measurements for the readiness probe.
+ *
+ * Backfill monitoring
+ * ────────────────────
+ * The monitor accepts an optional BackfillCoordinator reference. When present,
+ * the health endpoint exposes:
+ *   - backfill.status  — "healthy" | "backfilling" | "gap_too_large" | "circuit_open"
+ *   - backfill.progress — processed / total ledger counts
  */
 
 import { Pool } from "pg";
+import type { BackfillCoordinator, BackfillStatus, BackfillProgress } from "./backfill-coordinator";
 
 export interface DependencyCheck {
   status: "up" | "down";
@@ -18,12 +26,22 @@ export interface EventStreamCheck {
   lastEventAgo: string;
 }
 
+export interface BackfillHealthCheck {
+  status: BackfillStatus;
+  fromLedger?: number;
+  toLedger?: number;
+  processedLedgers: number;
+  totalLedgers: number;
+  consecutiveFailures: number;
+}
+
 export interface ReadinessResult {
   ready: boolean;
   checks: {
     database: DependencyCheck;
     stellar_rpc: DependencyCheck;
     event_stream: EventStreamCheck;
+    backfill: BackfillHealthCheck;
   };
 }
 
@@ -32,11 +50,20 @@ export class HealthMonitor {
   private startedAt: string | null = null;
   private shuttingDown = false;
   private lastEventAt: number | null = null;
+  private backfillCoordinator: BackfillCoordinator | null = null;
 
   constructor(
     private db: Pool,
     private rpcUrl: string
   ) {}
+
+  /**
+   * Attach a backfill coordinator so the health endpoint can report its status.
+   * Call this after constructing both the monitor and the coordinator.
+   */
+  setBackfillCoordinator(coordinator: BackfillCoordinator): void {
+    this.backfillCoordinator = coordinator;
+  }
 
   markStarted(): void {
     if (this.started) return;
@@ -95,6 +122,26 @@ export class HealthMonitor {
     return { status: "connected", lastEventAgo: `${secondsAgo}s` };
   }
 
+  private checkBackfill(): BackfillHealthCheck {
+    if (!this.backfillCoordinator) {
+      return {
+        status: "healthy",
+        processedLedgers: 0,
+        totalLedgers: 0,
+        consecutiveFailures: 0,
+      };
+    }
+    const p: BackfillProgress = this.backfillCoordinator.progress;
+    return {
+      status: p.status,
+      fromLedger: p.fromLedger,
+      toLedger: p.toLedger,
+      processedLedgers: p.processedLedgers,
+      totalLedgers: p.totalLedgers,
+      consecutiveFailures: p.consecutiveFailures,
+    };
+  }
+
   async checkReadiness(): Promise<ReadinessResult> {
     if (this.shuttingDown) {
       return {
@@ -103,6 +150,12 @@ export class HealthMonitor {
           database: { status: "down", latencyMs: 0 },
           stellar_rpc: { status: "down", latencyMs: 0 },
           event_stream: { status: "disconnected", lastEventAgo: "n/a" },
+          backfill: {
+            status: "healthy",
+            processedLedgers: 0,
+            totalLedgers: 0,
+            consecutiveFailures: 0,
+          },
         },
       };
     }
@@ -112,8 +165,14 @@ export class HealthMonitor {
       this.checkStellarRpc(),
     ]);
     const event_stream = this.checkEventStream();
+    const backfill = this.checkBackfill();
 
-    const ready = database.status === "up" && stellar_rpc.status === "up";
-    return { ready, checks: { database, stellar_rpc, event_stream } };
+    // Not ready if circuit breaker is open or gap is too large.
+    const backfillHealthy =
+      backfill.status !== "circuit_open" && backfill.status !== "gap_too_large";
+    const ready =
+      database.status === "up" && stellar_rpc.status === "up" && backfillHealthy;
+
+    return { ready, checks: { database, stellar_rpc, event_stream, backfill } };
   }
 }
