@@ -54,6 +54,11 @@ fn validate_string_max_len(env: &Env, label: &str, value: &String, max: u32) {
 }
 
 pub fn validate_username(env: &Env, username: &String) {
+    require_with_error!(
+        env,
+        username.len() >= MIN_NAME_LEN,
+        "username too short"
+    );
     validate_string_max_len(env, "username", username, MAX_NAME_LEN);
 }
 
