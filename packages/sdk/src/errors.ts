@@ -140,18 +140,60 @@ export class CircuitBreakerError extends LinkoraError {
   }
 }
 
-// ── mapError ──────────────────────────────────────────────────────────────────
+// ── Contract error codes ──────────────────────────────────────────────────────
 
-/**
- * Maps a raw error string or transaction simulation response error to a specific
- * LinkoraError subclass.
- *
- * @param err The caught raw error object or string.
- * @returns A typed LinkoraError instance.
- */
-export function mapError(err: unknown): LinkoraError {
+export enum ContractErrorCode {
+  AlreadyInitialized = 1,
+  UsernameTaken = 2,
+  UsernameTooLong = 3,
+  NotAdmin = 4,
+  OnlyAuthor = 5,
+  Blocked = 6,
+  InsufficientAllowance = 7,
+  InsufficientBalance = 8,
+  CooldownActive = 9,
+  NotFound = 10,
+  PostTooLong = 11,
+  InvalidInput = 12,
+  SimulationFailed = 13,
+}
+
+type ErrorConstructor = new (
+  message: string,
+  details?: Record<string, unknown>,
+  originalError?: unknown
+) => LinkoraError;
+
+const errorCodeRegistry: Map<ContractErrorCode, ErrorConstructor> = new Map([
+  [ContractErrorCode.AlreadyInitialized, ContractError],
+  [ContractErrorCode.UsernameTaken, ValidationError],
+  [ContractErrorCode.UsernameTooLong, ValidationError],
+  [ContractErrorCode.NotAdmin, UnauthorizedError],
+  [ContractErrorCode.OnlyAuthor, UnauthorizedError],
+  [ContractErrorCode.Blocked, UnauthorizedError],
+  [ContractErrorCode.InsufficientAllowance, InsufficientBalanceError],
+  [ContractErrorCode.InsufficientBalance, InsufficientBalanceError],
+  [ContractErrorCode.CooldownActive, CooldownError],
+  [ContractErrorCode.NotFound, NotFoundError],
+  [ContractErrorCode.PostTooLong, ValidationError],
+  [ContractErrorCode.InvalidInput, ValidationError],
+  [ContractErrorCode.SimulationFailed, ContractError],
+]);
+
+function tryMapByErrorCode(err: unknown): LinkoraError | null {
+  if (typeof err !== "object" || err === null) return null;
+
+  const code = (err as Record<string, unknown>).code;
+  if (typeof code !== "number") return null;
+
+  const Ctor = errorCodeRegistry.get(code as ContractErrorCode);
+  if (!Ctor) return null;
+
   const msg = err instanceof Error ? err.message : String(err);
+  return new Ctor(msg, undefined, err);
+}
 
+function mapByRegex(msg: string, err: unknown): LinkoraError {
   if (/allowance|insufficient allowance/i.test(msg)) {
     return new InsufficientBalanceError(
       "Insufficient allowance to complete transaction.",
@@ -196,4 +238,12 @@ export function mapError(err: unknown): LinkoraError {
   }
 
   return new LinkoraError(msg, "LINKORA_ERROR", undefined, err);
+}
+
+export function mapError(err: unknown): LinkoraError {
+  const codeMapped = tryMapByErrorCode(err);
+  if (codeMapped) return codeMapped;
+
+  const msg = err instanceof Error ? err.message : String(err);
+  return mapByRegex(msg, err);
 }

@@ -45,7 +45,7 @@ export class DmService {
     return conversations.get(conversationKey(this.userAddress, otherAddress)) ?? [];
   }
 
-  async sendMessage(toAddress: string, content: string): Promise<void> {
+  async sendMessage(toAddress: string, content: string, _senderKeypair: unknown): Promise<void> {
     await new Promise<void>((resolve) => setTimeout(resolve, 300));
     const key = conversationKey(this.userAddress, toAddress);
     const thread = conversations.get(key) ?? [];
