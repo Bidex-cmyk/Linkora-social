@@ -236,8 +236,10 @@ interface RedisPipeline {
  */
 export async function createRateLimitStore(redisUrl?: string): Promise<RateLimitStore> {
   if (redisUrl) {
-    const { default: Redis } = await import("ioredis");
-    const client = new Redis(redisUrl, {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const Redis = (await import("ioredis")) as any;
+    const RedisClass = Redis.default ?? Redis;
+    const client = new RedisClass(redisUrl, {
       enableOfflineQueue: false,
       maxRetriesPerRequest: 3,
       lazyConnect: true,

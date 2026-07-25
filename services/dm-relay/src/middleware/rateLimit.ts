@@ -68,7 +68,8 @@ let anonLimiter: ReturnType<typeof rateLimit>;
 let authLimiter: ReturnType<typeof rateLimit>;
 
 function buildLimiters(store?: RateLimitOptions["store"]): void {
-  const shared: Partial<RateLimitOptions> = {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const shared: any = {
     windowMs: 60_000,
     standardHeaders: "draft-8",
     legacyHeaders: false,
@@ -78,22 +79,26 @@ function buildLimiters(store?: RateLimitOptions["store"]): void {
   anonLimiter = rateLimit({
     ...shared,
     limit: RATE_LIMIT_ANON_RPM,
-    keyGenerator: (req: Request) => getClientIP(req),
-    handler: (_req: Request, res: Response) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    keyGenerator: (req: any) => getClientIP(req),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    handler: (_req: any, res: any) => {
       const err = rateLimitedError(`Max ${RATE_LIMIT_ANON_RPM} requests per minute per IP`);
-      res.status(err.statusCode).json(err.toJSON((_req as any).requestId));
+      res.status(err.statusCode).json(err.toJSON(_req.requestId));
     },
   });
 
   authLimiter = rateLimit({
     ...shared,
     limit: RATE_LIMIT_AUTH_RPM,
-    keyGenerator: (req: Request) => (req as any).stellarAddress || getClientIP(req),
-    handler: (_req: Request, res: Response) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    keyGenerator: (req: any) => req.stellarAddress || getClientIP(req),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    handler: (_req: any, res: any) => {
       const err = rateLimitedError(
         `Max ${RATE_LIMIT_AUTH_RPM} requests per minute per authenticated user`
       );
-      res.status(err.statusCode).json(err.toJSON((_req as any).requestId));
+      res.status(err.statusCode).json(err.toJSON(_req.requestId));
     },
   });
 }
@@ -136,7 +141,10 @@ export { anonLimiter, authLimiter };
 
 export function rateLimitMiddleware(req: Request, res: Response, next: NextFunction): void {
   if ((req as any).stellarAddress) {
-    return authLimiter(req, res, next);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (authLimiter as any)(req, res, next);
+    return;
   }
-  return anonLimiter(req, res, next);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (anonLimiter as any)(req, res, next);
 }
