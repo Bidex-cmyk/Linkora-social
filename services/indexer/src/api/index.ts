@@ -214,7 +214,8 @@ if (require.main === module) {
   const { Pool } = require("pg") as typeof import("pg");
   const DATABASE_URL = process.env.DATABASE_URL ?? "";
   const _stub = new Pool({ connectionString: DATABASE_URL }) as unknown as Database;
-  const PORT = parseInt(process.env.PORT ?? "3001", 10);
+  const { loadConfig } = require("../config");
+  const PORT = loadConfig().port;
   const databaseUrl = process.env.DATABASE_URL;
   const pg = databaseUrl ? new PgPool({ connectionString: databaseUrl }) : undefined;
   const apiApp = pg ? createApp(new PostgresDatabase(pg), pg) : createApp(_stub);
