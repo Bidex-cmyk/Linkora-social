@@ -58,6 +58,7 @@ export function createApp(
   healthMonitor?: HealthMonitor
 ): express.Application {
   const app = express();
+  app.set("trust proxy", 1); // trust first proxy
   app.use(express.json());
   app.use(corsMiddleware);
   app.use(requestLoggingMiddleware);

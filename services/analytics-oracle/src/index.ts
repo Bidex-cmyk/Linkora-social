@@ -138,6 +138,7 @@ async function scheduleLoop(currentLedger: bigint): Promise<void> {
 }
 
 const app = express();
+app.set("trust proxy", 1); // trust first proxy
 const startTime = Date.now();
 
 let started = false;
