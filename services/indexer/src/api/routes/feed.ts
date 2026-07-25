@@ -76,7 +76,7 @@ export function createFeedRouter(pg: Pool): Router {
       const { limit, cursor } = req.query as unknown as z.infer<typeof followingFeedQuerySchema>;
 
       let query = `
-        SELECT 
+        SELECT
           p.id,
           p.author,
           p.content,
@@ -85,7 +85,10 @@ export function createFeedRouter(pg: Pool): Router {
           p.created_at
         FROM posts p
         INNER JOIN follows f ON p.author = f.followee
-        WHERE f.follower = $1 AND p.deleted_at IS NULL
+        WHERE f.follower = $1
+          AND p.deleted_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM blocks WHERE blocker = $1 AND blocked = p.author)
+          AND NOT EXISTS (SELECT 1 FROM blocks WHERE blocker = p.author AND blocked = $1)
       `;
       const params: (string | Date)[] = [address];
       let paramIndex = 2;

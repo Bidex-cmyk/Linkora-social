@@ -61,6 +61,8 @@ const pgPool = new Pool({
   max: cfg.dbPool.max,
   idleTimeoutMillis: cfg.dbPool.idleTimeoutMs,
   connectionTimeoutMillis: cfg.dbPool.connectionTimeoutMs,
+  min: cfg.pgPoolMin,
+  max: cfg.pgPoolMax,
 });
 
 logger.info(
