@@ -45,5 +45,6 @@ export async function submitAttestation(
   const prepared = await server.prepareTransaction(tx);
   prepared.sign(oracleKeypair);
   const result = await server.sendTransaction(prepared);
+  await server.waitForTransaction(result.hash);
   return result.hash;
 }
