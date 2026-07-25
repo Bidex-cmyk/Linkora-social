@@ -14,7 +14,7 @@ mod validation;
 use validation::{
     validate_address_list, validate_amount, validate_content, validate_gov_parameter,
     validate_non_default_address, validate_protocol_fee, validate_report_verdict,
-    validate_u32_range, validate_username, MAX_FEE_BPS, MAX_QUORUM,
+    validate_signature, validate_u32_range, validate_username, MAX_FEE_BPS, MAX_QUORUM,
 };
 
 // ── Storage Key Enum ──────────────────────────────────────────────────────────
@@ -44,6 +44,7 @@ pub enum StorageKey {
     DmPublicKey(Address),           // persistent: user -> X25519 public key for encrypted DMs
     CredentialRoot(Address),        // persistent: user -> credential Merkle root
     NullifierSet(Address, BytesN<32>), // persistent: (user, nullifier) -> bool (prevents replay)
+    CredentialAuthority, // persistent: Ed25519 pubkey trusted to sign credential root updates
     // ── Governance ────────────────────────────────────────────────────────
     GovProposal(u64),      // persistent: proposal_id -> GovProposal
     GovVote(u64, Address), // persistent: (proposal_id, voter) -> bool (prevents double-voting)
@@ -54,6 +55,15 @@ pub enum StorageKey {
     AttestationNullifier(BytesN<32>), // persistent: sha256(report_cbor) -> bool (replay guard)
     Report(u64, Address), // persistent: (post_id, reporter) -> Report
     ReportCount(u64),  // persistent: post_id -> u32 count of reports
+
+    // ── Lazy Cleanup (Tombstones & Indexes) ───────────────────────────────
+    DeletedPost(u64),              // persistent: post_id -> bool
+    DeletedProfile(Address),       // persistent: user -> bool
+    PostLikersCount(u64),          // persistent: post_id -> u32
+    PostLikersIdx(u64, u32),       // persistent: (post_id, seq) -> Address
+    PostReportersIdx(u64, u32),    // persistent: (post_id, seq) -> Address (Count is ReportCount)
+    PostTipCooldownsCount(u64),    // persistent: post_id -> u32
+    PostTipCooldownsIdx(u64, u32), // persistent: (post_id, seq) -> Address
 }
 
 #[contracterror]
@@ -96,7 +106,6 @@ const TIP_COOLDOWN_LEDGERS: u32 = 17_280;
 // ── Pagination Limit ──────────────────────────────────────────────────────────
 
 const MAX_PAGE_LIMIT: u32 = 50;
-const MAX_PAGINATION_LIMIT: u32 = 50;
 
 // ── Data Types ────────────────────────────────────────────────────────────────
 
@@ -201,6 +210,9 @@ pub struct GovProposal {
     pub votes_against: u32,
     pub created_ledger: u32,
     pub time_lock_ledgers: u32,
+    pub vote_window_ledgers: u32,
+    pub quorum: u32,
+    pub quorum_decay_rate_bps: u32,
     pub status: GovStatus,
 }
 
@@ -877,6 +889,131 @@ impl LinkoraContract {
             .unwrap_or_else(|| Map::new(&env));
         registered.remove(user.clone());
         env.storage().instance().set(&REGISTERED_USERS, &registered);
+
+        // O(1) Deletions
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::DmPublicKey(user.clone()));
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::CredentialRoot(user.clone()));
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::Blocks(user.clone()));
+
+        // Tombstone for lazy cleanup
+        let tombstone_key = StorageKey::DeletedProfile(user.clone());
+        env.storage().persistent().set(&tombstone_key, &true);
+        Self::bump(&env, &tombstone_key);
+    }
+
+    pub fn batch_cleanup_profile(env: Env, user: Address, max_entries: u32) {
+        Self::bump_instance(&env);
+        let tombstone_key = StorageKey::DeletedProfile(user.clone());
+        assert!(
+            env.storage().persistent().has(&tombstone_key),
+            "profile not deleted"
+        );
+
+        let mut entries_removed = 0;
+
+        // Cleanup Followers
+        let followers_count_key = StorageKey::FollowersCount(user.clone());
+        let mut f_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&followers_count_key)
+            .unwrap_or(0);
+        while f_count > 0 && entries_removed < max_entries {
+            f_count -= 1;
+            let idx_key = StorageKey::FollowersIdx(user.clone(), f_count);
+            if let Some(follower) = env.storage().persistent().get::<_, Address>(&idx_key) {
+                env.storage()
+                    .persistent()
+                    .remove(&StorageKey::Edge(follower.clone(), user.clone()));
+                env.storage()
+                    .persistent()
+                    .remove(&StorageKey::FollowersPos(user.clone(), follower.clone()));
+
+                // Swap-remove user from the follower's following list
+                Self::swap_remove_from_index(&env, &follower, &user, true);
+            }
+            env.storage().persistent().remove(&idx_key);
+            entries_removed += 1;
+        }
+        env.storage()
+            .persistent()
+            .set(&followers_count_key, &f_count);
+        Self::bump(&env, &followers_count_key);
+
+        // Cleanup Following
+        let following_count_key = StorageKey::FollowingCount(user.clone());
+        let mut following_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&following_count_key)
+            .unwrap_or(0);
+        while following_count > 0 && entries_removed < max_entries {
+            following_count -= 1;
+            let idx_key = StorageKey::FollowingIdx(user.clone(), following_count);
+            if let Some(followee) = env.storage().persistent().get::<_, Address>(&idx_key) {
+                env.storage()
+                    .persistent()
+                    .remove(&StorageKey::Edge(user.clone(), followee.clone()));
+                env.storage()
+                    .persistent()
+                    .remove(&StorageKey::FollowingPos(user.clone(), followee.clone()));
+
+                // Swap-remove user from the followee's followers list
+                Self::swap_remove_from_index(&env, &followee, &user, false);
+            }
+            env.storage().persistent().remove(&idx_key);
+            entries_removed += 1;
+        }
+        env.storage()
+            .persistent()
+            .set(&following_count_key, &following_count);
+        Self::bump(&env, &following_count_key); // Cleanup Authored Posts
+        let author_key = StorageKey::AuthorPosts(user.clone());
+        let mut author_posts: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&author_key)
+            .unwrap_or(Vec::new(&env));
+        let mut i = author_posts.len();
+        while i > 0 && entries_removed < max_entries {
+            i -= 1;
+            let post_id = author_posts.get(i).unwrap();
+
+            // Tombstone the post
+            let post_tombstone = StorageKey::DeletedPost(post_id);
+            env.storage().persistent().set(&post_tombstone, &true);
+            Self::bump(&env, &post_tombstone);
+
+            // Delete post object itself
+            env.storage()
+                .persistent()
+                .remove(&StorageKey::Post(post_id));
+
+            // Clean up associated storage: likes, reports, and tip cooldowns.
+            // Use a generous max_entries since each post's cleanup is small.
+            // This must be done inline to avoid leaving orphaned storage
+            // that would become unreachable once the author key is removed.
+            Self::cleanup_post_associations(&env, post_id);
+
+            author_posts.remove(i);
+            entries_removed += 1;
+        }
+        if author_posts.is_empty() {
+            env.storage().persistent().remove(&author_key);
+        } else {
+            env.storage().persistent().set(&author_key, &author_posts);
+            Self::bump(&env, &author_key);
+        }
+
+        if f_count == 0 && following_count == 0 && author_posts.is_empty() {
+            env.storage().persistent().remove(&tombstone_key);
+        }
     }
 
     pub fn get_address_by_username(env: Env, username: String) -> Option<Address> {
@@ -891,6 +1028,18 @@ impl LinkoraContract {
 
     // ── DM Key Management ─────────────────────────────────────────────────────
 
+    /// Register or rotate the trusted Ed25519 authority key that signs credential
+    /// root updates. Admin only.
+    pub fn set_credential_authority(env: Env, admin: Address, pubkey: BytesN<32>) {
+        Self::bump_instance(&env);
+        admin.require_auth();
+        validate_non_default_address(&env, "admin", &admin);
+        Self::require_role(&env, &admin, Role::Admin);
+        let key = StorageKey::CredentialAuthority;
+        env.storage().persistent().set(&key, &pubkey);
+        Self::bump(&env, &key);
+    }
+
     pub fn update_credential_root(
         env: Env,
         user: Address,
@@ -900,9 +1049,20 @@ impl LinkoraContract {
         Self::bump_instance(&env);
         user.require_auth();
         validate_non_default_address(&env, "user", &user);
+        validate_signature(&env, "signature", &signature);
 
-        let _message_hash = Self::credential_root_message_hash(&env, &new_root);
-        let _signature = signature;
+        let authority_key = StorageKey::CredentialAuthority;
+        let authority_pubkey: BytesN<32> = env
+            .storage()
+            .persistent()
+            .get(&authority_key)
+            .expect("credential authority not set");
+        Self::bump(&env, &authority_key);
+
+        // Verify Ed25519 signature: ed25519_verify(pubkey, message, signature).
+        let message_hash = Self::credential_root_message_hash(&env, &new_root);
+        env.crypto()
+            .ed25519_verify(&authority_pubkey, &message_hash.into(), &signature);
 
         let key = StorageKey::CredentialRoot(user.clone());
         env.storage().persistent().set(&key, &new_root);
@@ -1008,6 +1168,12 @@ impl LinkoraContract {
         Self::require_not_paused(&env);
 
         if Self::is_either_blocked(&env, &followee, &follower) {
+            panic!("blocked");
+        }
+        if Self::is_blocked(env.clone(), follower.clone(), followee.clone()) {
+            panic!("blocked");
+        }
+        if Self::is_blocked(env.clone(), follower.clone(), followee.clone()) {
             panic!("blocked");
         }
 
@@ -1140,7 +1306,7 @@ impl LinkoraContract {
     pub fn get_following(env: Env, user: Address, offset: u32, limit: u32) -> Vec<Address> {
         validate_non_default_address(&env, "user", &user);
         assert!(
-            limit > 0 && limit <= MAX_PAGINATION_LIMIT,
+            limit > 0 && limit <= MAX_PAGE_LIMIT,
             "limit must be between 1 and 50"
         );
         Self::paginate_index(&env, &user, offset, limit, true)
@@ -1311,6 +1477,13 @@ impl LinkoraContract {
         blocks.set(blocked.clone(), ());
         env.storage().persistent().set(&key, &blocks);
         Self::bump(&env, &key);
+
+        // Clean up follow relationships between blocker and blocked
+        Self::cleanup_follow_on_block(&env, &blocker, &blocked);
+
+        // Clean up like entries between blocker and blocked
+        Self::cleanup_likes_on_block(&env, &blocker, &blocked);
+
         BlockEvent { blocker, blocked }.publish(&env);
     }
 
@@ -1423,6 +1596,10 @@ impl LinkoraContract {
         assert!(post.author == author, "only author can delete post");
         env.storage().persistent().remove(&key);
 
+        let tombstone_key = StorageKey::DeletedPost(post_id);
+        env.storage().persistent().set(&tombstone_key, &true);
+        Self::bump(&env, &tombstone_key);
+
         // Remove post ID from author's posts list
         let author_key = StorageKey::AuthorPosts(author.clone());
         if let Some(mut author_posts) = env
@@ -1444,10 +1621,101 @@ impl LinkoraContract {
         PostDeleted { post_id, author }.publish(&env);
     }
 
+    pub fn batch_cleanup_post(env: Env, post_id: u64, max_entries: u32) {
+        Self::bump_instance(&env);
+        let tombstone_key = StorageKey::DeletedPost(post_id);
+        assert!(
+            env.storage().persistent().has(&tombstone_key),
+            "post not deleted"
+        );
+
+        let mut entries_removed = 0;
+
+        // Cleanup Likes
+        let likes_count_key = StorageKey::PostLikersCount(post_id);
+        let mut likes_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&likes_count_key)
+            .unwrap_or(0);
+        while likes_count > 0 && entries_removed < max_entries {
+            likes_count -= 1;
+            let idx_key = StorageKey::PostLikersIdx(post_id, likes_count);
+            if let Some(liker) = env.storage().persistent().get::<_, Address>(&idx_key) {
+                env.storage()
+                    .persistent()
+                    .remove(&StorageKey::Like(post_id, liker));
+                env.storage().persistent().remove(&idx_key);
+            }
+            entries_removed += 1;
+        }
+        if likes_count == 0 {
+            env.storage().persistent().remove(&likes_count_key);
+        } else {
+            env.storage()
+                .persistent()
+                .set(&likes_count_key, &likes_count);
+            Self::bump(&env, &likes_count_key);
+        }
+
+        // Cleanup Reports
+        let reports_count_key = StorageKey::ReportCount(post_id);
+        let mut reports_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&reports_count_key)
+            .unwrap_or(0);
+        while reports_count > 0 && entries_removed < max_entries {
+            reports_count -= 1;
+            let idx_key = StorageKey::PostReportersIdx(post_id, reports_count);
+            if let Some(reporter) = env.storage().persistent().get::<_, Address>(&idx_key) {
+                env.storage()
+                    .persistent()
+                    .remove(&StorageKey::Report(post_id, reporter));
+                env.storage().persistent().remove(&idx_key);
+            }
+            entries_removed += 1;
+        }
+        if reports_count == 0 {
+            env.storage().persistent().remove(&reports_count_key);
+        } else {
+            env.storage()
+                .persistent()
+                .set(&reports_count_key, &reports_count);
+            Self::bump(&env, &reports_count_key);
+        }
+
+        // Cleanup Tip Cooldowns
+        let tc_count_key = StorageKey::PostTipCooldownsCount(post_id);
+        let mut tc_count: u32 = env.storage().persistent().get(&tc_count_key).unwrap_or(0);
+        while tc_count > 0 && entries_removed < max_entries {
+            tc_count -= 1;
+            let idx_key = StorageKey::PostTipCooldownsIdx(post_id, tc_count);
+            if let Some(tipper) = env.storage().persistent().get::<_, Address>(&idx_key) {
+                env.storage()
+                    .temporary()
+                    .remove(&StorageKey::TipCooldown(post_id, tipper));
+                env.storage().persistent().remove(&idx_key);
+            }
+            entries_removed += 1;
+        }
+        if tc_count == 0 {
+            env.storage().persistent().remove(&tc_count_key);
+        } else {
+            env.storage().persistent().set(&tc_count_key, &tc_count);
+            Self::bump(&env, &tc_count_key);
+        }
+
+        // Finalize Tombstone Removal
+        if likes_count == 0 && reports_count == 0 && tc_count == 0 {
+            env.storage().persistent().remove(&tombstone_key);
+        }
+    }
+
     pub fn get_posts_by_author(env: Env, author: Address, offset: u32, limit: u32) -> Vec<u64> {
         validate_non_default_address(&env, "author", &author);
         assert!(
-            limit > 0 && limit <= MAX_PAGINATION_LIMIT,
+            limit > 0 && limit <= MAX_PAGE_LIMIT,
             "limit must be between 1 and 50"
         );
 
@@ -1481,14 +1749,33 @@ impl LinkoraContract {
         }
 
         let post_key = StorageKey::Post(post_id);
-        let mut post: Post = env
+        let post: Post = env
             .storage()
             .persistent()
             .get(&post_key)
             .expect("post not found");
+        if Self::is_blocked(env.clone(), post.author.clone(), user.clone()) {
+            panic!("blocked");
+        }
+        if Self::is_blocked(env.clone(), user.clone(), post.author.clone()) {
+            panic!("blocked");
+        }
+
+        let mut post = post;
+        let like_idx_key = StorageKey::PostLikersIdx(post_id, post.like_count as u32);
         post.like_count += 1;
         env.storage().persistent().set(&post_key, &post);
         Self::bump(&env, &post_key);
+
+        env.storage().persistent().set(&like_idx_key, &user);
+        Self::bump(&env, &like_idx_key);
+
+        let count_key = StorageKey::PostLikersCount(post_id);
+        env.storage()
+            .persistent()
+            .set(&count_key, &(post.like_count as u32));
+        Self::bump(&env, &count_key);
+
         env.storage().persistent().set(&like_key, &true);
         Self::bump(&env, &like_key);
         LikePostEvent { user, post_id }.publish(&env);
@@ -1526,6 +1813,12 @@ impl LinkoraContract {
         if Self::is_either_blocked(&env, &post.author, &tipper) {
             panic!("blocked");
         }
+        if Self::is_blocked(env.clone(), tipper.clone(), post.author.clone()) {
+            panic!("blocked");
+        }
+        if Self::is_blocked(env.clone(), tipper.clone(), post.author.clone()) {
+            panic!("blocked");
+        }
 
         // Check tip cooldown: one tip per tipper per post per cooldown window.
         let cooldown_key = StorageKey::TipCooldown(post_id, tipper.clone());
@@ -1545,10 +1838,21 @@ impl LinkoraContract {
         }
 
         // Update last tip ledger
+        let was_tracked = env.storage().temporary().has(&cooldown_key);
         env.storage()
             .temporary()
             .set(&cooldown_key, &current_ledger);
         Self::bump_temp(&env, &cooldown_key);
+
+        if !was_tracked {
+            let tc_count_key = StorageKey::PostTipCooldownsCount(post_id);
+            let count: u32 = env.storage().persistent().get(&tc_count_key).unwrap_or(0);
+            let tc_idx_key = StorageKey::PostTipCooldownsIdx(post_id, count);
+            env.storage().persistent().set(&tc_idx_key, &tipper);
+            Self::bump(&env, &tc_idx_key);
+            env.storage().persistent().set(&tc_count_key, &(count + 1));
+            Self::bump(&env, &tc_count_key);
+        }
 
         let fee_bps = Self::get_fee_bps(env.clone());
         let fee_amount =
@@ -1783,15 +2087,16 @@ impl LinkoraContract {
         }
 
         let initial_len = pool.admins.len();
-        let mut new_admins = Vec::new(&env);
-        for existing_admin in pool.admins.iter() {
-            if existing_admin != admin {
-                new_admins.push_back(existing_admin.clone());
+        let mut remove_idx: Option<u32> = None;
+        for (i, existing_admin) in pool.admins.iter().enumerate() {
+            if existing_admin == admin {
+                remove_idx = Some(i as u32);
+                break;
             }
         }
-        pool.admins = new_admins;
+        let idx = remove_idx.expect("admin not found");
+        pool.admins.remove(idx);
 
-        assert!(pool.admins.len() < initial_len, "admin not found");
         assert!(
             pool.threshold <= pool.admins.len(),
             "threshold unreachable after removal"
@@ -2032,6 +2337,9 @@ impl LinkoraContract {
             votes_against: 0,
             created_ledger: env.ledger().sequence(),
             time_lock_ledgers: config.time_lock_ledgers,
+            vote_window_ledgers: config.vote_window_ledgers,
+            quorum: config.quorum,
+            quorum_decay_rate_bps: config.quorum_decay_rate_bps,
             status: GovStatus::Active,
         };
 
@@ -2058,14 +2366,6 @@ impl LinkoraContract {
         validate_non_default_address(&env, "voter", &voter);
         require_with_error!(&env, proposal_id > 0, "proposal id must be positive");
 
-        let config_key = StorageKey::GovConfig;
-        let config: GovConfig = env
-            .storage()
-            .persistent()
-            .get(&config_key)
-            .expect("governance not configured");
-        Self::bump(&env, &config_key);
-
         let proposal_key = StorageKey::GovProposal(proposal_id);
         let mut proposal: GovProposal = env
             .storage()
@@ -2076,7 +2376,7 @@ impl LinkoraContract {
         assert!(proposal.status == GovStatus::Active, "proposal not active");
 
         let current_ledger = env.ledger().sequence();
-        let vote_deadline = proposal.created_ledger + config.vote_window_ledgers;
+        let vote_deadline = proposal.created_ledger + proposal.vote_window_ledgers;
         assert!(current_ledger <= vote_deadline, "vote window closed");
 
         let vote_key = StorageKey::GovVote(proposal_id, voter.clone());
@@ -2122,9 +2422,13 @@ impl LinkoraContract {
             .ledger()
             .sequence()
             .saturating_sub(proposal.created_ledger);
-        let decay = (elapsed as u64 * config.quorum_decay_rate_bps as u64 / 10_000) as u32;
-        let decayed_quorum = config.quorum.saturating_sub(decay);
+        let decay = (elapsed as u64 * proposal.quorum_decay_rate_bps as u64 / 10_000) as u32;
+        let decayed_quorum = proposal.quorum.saturating_sub(decay);
 
+        // NOTE: quorum_floor is intentionally read from live config, not snapshotted.
+        // It serves as a global safety minimum that should remain consistent across
+        // all proposals. Changing quorum_floor raises/lowers the floor uniformly,
+        // which only affects whether a proposal can pass, not its timing.
         if decayed_quorum < config.quorum_floor {
             config.quorum_floor
         } else {
@@ -2154,7 +2458,7 @@ impl LinkoraContract {
         assert!(proposal.status == GovStatus::Active, "proposal not active");
 
         let current_ledger = env.ledger().sequence();
-        let vote_end = proposal.created_ledger + config.vote_window_ledgers;
+        let vote_end = proposal.created_ledger + proposal.vote_window_ledgers;
         let execution_after = vote_end as u64 + proposal.time_lock_ledgers as u64;
         assert!(
             (current_ledger as u64) >= execution_after,
@@ -2237,14 +2541,6 @@ impl LinkoraContract {
         validate_address_list(&env, "signers", &signers);
         require_with_error!(&env, proposal_id > 0, "proposal id must be positive");
 
-        let config_key = StorageKey::GovConfig;
-        let config: GovConfig = env
-            .storage()
-            .persistent()
-            .get(&config_key)
-            .expect("governance not configured");
-        Self::bump(&env, &config_key);
-
         let proposal_key = StorageKey::GovProposal(proposal_id);
         let mut proposal: GovProposal = env
             .storage()
@@ -2255,8 +2551,8 @@ impl LinkoraContract {
         assert!(proposal.status == GovStatus::Active, "proposal not active");
 
         let current_ledger = env.ledger().sequence();
-        let vote_end = proposal.created_ledger + config.vote_window_ledgers;
-        let time_lock_end = vote_end + config.time_lock_ledgers;
+        let vote_end = proposal.created_ledger + proposal.vote_window_ledgers;
+        let time_lock_end = vote_end + proposal.time_lock_ledgers;
         assert!(
             current_ledger >= vote_end && current_ledger < time_lock_end,
             "veto only during time-lock window"
@@ -2326,6 +2622,15 @@ impl LinkoraContract {
         window_end: u64,
     ) -> bool {
         validate_non_default_address(&env, "creator", &creator);
+        assert!(
+            window_start <= window_end,
+            "window_start must be <= window_end"
+        );
+        let current_time = env.ledger().timestamp();
+        assert!(
+            current_time >= window_start && current_time <= window_end,
+            "attestation outside time window"
+        );
         let oracle_key = StorageKey::OracleKey(oracle_name.clone());
         let pubkey: BytesN<32> = env
             .storage()
@@ -2490,6 +2795,11 @@ impl LinkoraContract {
 
         let count_key = StorageKey::ReportCount(post_id);
         let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+
+        let rep_idx_key = StorageKey::PostReportersIdx(post_id, count);
+        env.storage().persistent().set(&rep_idx_key, &reporter);
+        Self::bump(&env, &rep_idx_key);
+
         env.storage().persistent().set(&count_key, &(count + 1));
         Self::bump(&env, &count_key);
 
@@ -2943,6 +3253,184 @@ impl LinkoraContract {
         env.storage()
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+
+    // ── Block cleanup helpers ──────────────────────────────────────────────
+
+    /// Remove follow relationships in both directions between two users.
+    /// Called by block_user to enforce a clean break.
+    fn cleanup_follow_on_block(env: &Env, user_a: &Address, user_b: &Address) {
+        // Remove a -> b follow if it exists
+        let edge_key_ab = StorageKey::Edge(user_a.clone(), user_b.clone());
+        if env.storage().persistent().has(&edge_key_ab) {
+            env.storage().persistent().remove(&edge_key_ab);
+            Self::swap_remove_from_index(env, user_a, user_b, true);
+            Self::swap_remove_from_index(env, user_b, user_a, false);
+        }
+
+        // Remove b -> a follow if it exists
+        let edge_key_ba = StorageKey::Edge(user_b.clone(), user_a.clone());
+        if env.storage().persistent().has(&edge_key_ba) {
+            env.storage().persistent().remove(&edge_key_ba);
+            Self::swap_remove_from_index(env, user_b, user_a, true);
+            Self::swap_remove_from_index(env, user_a, user_b, false);
+        }
+    }
+
+    /// Remove like entries on posts authored by either party, liked by the other.
+    /// Called by block_user to enforce a clean break.
+    /// Iterates over the post count and checks likes for the affected pair.
+    fn cleanup_likes_on_block(env: &Env, user_a: &Address, user_b: &Address) {
+        let post_count: u64 = env.storage().instance().get(&POST_CT).unwrap_or(0);
+        if post_count == 0 {
+            return;
+        }
+
+        // Check all post IDs for likes between user_a and user_b
+        for post_id in 1..=post_count {
+            // Remove user_a's like on user_b's posts
+            let like_key_a = StorageKey::Like(post_id, user_a.clone());
+            if env.storage().persistent().has(&like_key_a) {
+                let post_key = StorageKey::Post(post_id);
+                if let Some(mut post) = env.storage().persistent().get::<_, Post>(&post_key) {
+                    if post.author == *user_b {
+                        env.storage().persistent().remove(&like_key_a);
+                        if post.like_count > 0 {
+                            post.like_count -= 1;
+                        }
+                        env.storage().persistent().set(&post_key, &post);
+                        Self::bump(env, &post_key);
+                        // Update PostLikersCount and clean up the likers index
+                        Self::swap_remove_like_from_index(env, post_id, user_a);
+                    }
+                }
+            }
+
+            // Remove user_b's like on user_a's posts
+            let like_key_b = StorageKey::Like(post_id, user_b.clone());
+            if env.storage().persistent().has(&like_key_b) {
+                let post_key = StorageKey::Post(post_id);
+                if let Some(mut post) = env.storage().persistent().get::<_, Post>(&post_key) {
+                    if post.author == *user_a {
+                        env.storage().persistent().remove(&like_key_b);
+                        if post.like_count > 0 {
+                            post.like_count -= 1;
+                        }
+                        env.storage().persistent().set(&post_key, &post);
+                        Self::bump(env, &post_key);
+                        // Update PostLikersCount and clean up the likers index
+                        Self::swap_remove_like_from_index(env, post_id, user_b);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Swap-remove a user from a post's likers index.
+    /// Scans the PostLikersIdx to find the user's position (O(n) where n =
+    /// the number of likers), then moves the last element into that position
+    /// and decrements PostLikersCount.
+    ///
+    /// This O(n) scan is acceptable because it only runs during
+    /// `block_user`, which is an infrequent operation.
+    fn swap_remove_like_from_index(env: &Env, post_id: u64, user: &Address) {
+        let count_key = StorageKey::PostLikersCount(post_id);
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        if count == 0 {
+            return;
+        }
+
+        // Find the position of the user in the likers index
+        let mut pos: Option<u32> = None;
+        for i in 0..count {
+            let idx_key = StorageKey::PostLikersIdx(post_id, i);
+            if let Some(addr) = env.storage().persistent().get::<_, Address>(&idx_key) {
+                if addr == *user {
+                    pos = Some(i);
+                    break;
+                }
+            }
+        }
+
+        let pos = match pos {
+            Some(p) => p,
+            None => return, // user not found in index — already cleaned up
+        };
+
+        let last = count - 1;
+
+        if pos != last {
+            // Move the last element into the removed position
+            let last_idx_key = StorageKey::PostLikersIdx(post_id, last);
+            if let Some(last_addr) = env.storage().persistent().get::<_, Address>(&last_idx_key) {
+                let target_idx_key = StorageKey::PostLikersIdx(post_id, pos);
+                env.storage().persistent().set(&target_idx_key, &last_addr);
+                Self::bump(env, &target_idx_key);
+            }
+        }
+
+        // Remove the last index entry and update the count
+        let last_idx_key = StorageKey::PostLikersIdx(post_id, last);
+        env.storage().persistent().remove(&last_idx_key);
+        env.storage().persistent().set(&count_key, &last);
+        Self::bump(env, &count_key);
+    }
+
+    /// Clean up all associated storage for a tombstoned post.
+    /// Removes likes, reports, and tip cooldowns without iterating
+    /// entry-by-entry (uses the batch_cleanup_post logic inline).
+    /// Called during batch_cleanup_profile to ensure authored posts'
+    /// associated data isn't orphaned.
+    fn cleanup_post_associations(env: &Env, post_id: u64) {
+        // Clean up Likes
+        let likes_count_key = StorageKey::PostLikersCount(post_id);
+        let likes_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&likes_count_key)
+            .unwrap_or(0);
+        for i in 0..likes_count {
+            let idx_key = StorageKey::PostLikersIdx(post_id, i);
+            if let Some(liker) = env.storage().persistent().get::<_, Address>(&idx_key) {
+                env.storage()
+                    .persistent()
+                    .remove(&StorageKey::Like(post_id, liker));
+            }
+            env.storage().persistent().remove(&idx_key);
+        }
+        env.storage().persistent().remove(&likes_count_key);
+
+        // Clean up Reports
+        let reports_count_key = StorageKey::ReportCount(post_id);
+        let reports_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&reports_count_key)
+            .unwrap_or(0);
+        for i in 0..reports_count {
+            let idx_key = StorageKey::PostReportersIdx(post_id, i);
+            if let Some(reporter) = env.storage().persistent().get::<_, Address>(&idx_key) {
+                env.storage()
+                    .persistent()
+                    .remove(&StorageKey::Report(post_id, reporter));
+            }
+            env.storage().persistent().remove(&idx_key);
+        }
+        env.storage().persistent().remove(&reports_count_key);
+
+        // Clean up Tip Cooldowns
+        let tc_count_key = StorageKey::PostTipCooldownsCount(post_id);
+        let tc_count: u32 = env.storage().persistent().get(&tc_count_key).unwrap_or(0);
+        for i in 0..tc_count {
+            let idx_key = StorageKey::PostTipCooldownsIdx(post_id, i);
+            if let Some(tipper) = env.storage().persistent().get::<_, Address>(&idx_key) {
+                env.storage()
+                    .temporary()
+                    .remove(&StorageKey::TipCooldown(post_id, tipper));
+            }
+            env.storage().persistent().remove(&idx_key);
+        }
+        env.storage().persistent().remove(&tc_count_key);
     }
 
     // ── Adjacency-set helpers (ADR-001) ───────────────────────────────────

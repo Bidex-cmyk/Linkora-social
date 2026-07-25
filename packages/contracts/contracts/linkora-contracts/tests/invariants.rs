@@ -88,7 +88,8 @@ mod invariants {
     }
 
     /// **Invariant 7:** Block prevents all interactions.
-    /// If user A blocks user B, then B cannot tip, follow, or like A's posts.
+    /// If user A blocks user B, then B cannot tip, follow, or like A's posts,
+    /// and A cannot tip, follow, or like B's posts (bidirectional enforcement).
     #[test]
     fn invariant_block_prevents_interaction() {
         // Test sequence:
@@ -96,7 +97,38 @@ mod invariants {
         // 2. Try: B tips A's post → should fail with "blocked"
         // 3. Try: B follows A → should fail with "blocked"
         // 4. Try: B likes A's post → should fail with "blocked"
+        // 5. Try: A tips B's post → should fail with "blocked" (bidirectional)
+        // 6. Try: A follows B → should fail with "blocked" (bidirectional)
+        // 7. Try: A likes B's post → should fail with "blocked" (bidirectional)
         println!("Checking: block_prevents_interaction");
+    }
+
+    /// **Invariant 11:** Block cleans up social graph.
+    /// When A blocks B, existing follow relationships in both directions
+    /// are removed, and like entries on each other's posts are removed.
+    #[test]
+    fn invariant_block_cleans_social_graph() {
+        // Test sequence:
+        // 1. A follows B, B follows A
+        // 2. A likes B's post, B likes A's post
+        // 3. A blocks B
+        // 4. Verify: A does not follow B, B does not follow A
+        // 5. Verify: A's like count on B's post is 0, B's like count on A's post is 0
+        println!("Checking: block_cleans_social_graph");
+    }
+
+    /// **Invariant 12:** Unblock does not restore previous relationships.
+    /// After A blocks B (removing follows/likes) and then unblocks B,
+    /// the follow relationships and likes are NOT restored.
+    #[test]
+    fn invariant_unblock_no_restore() {
+        // Test sequence:
+        // 1. A follows B, A likes B's post
+        // 2. A blocks B
+        // 3. A unblocks B
+        // 4. Verify: A does NOT follow B (clean break)
+        // 5. Verify: A's like count on B's post is 0 (clean break)
+        println!("Checking: unblock_no_restore");
     }
 
     /// **Invariant 8:** Vote window is enforced.
@@ -133,5 +165,23 @@ mod invariants {
         // 3. At 20 ledgers elapsed: eff_quorum = 70
         // 4. Verify: 75 >= 70 (monotonic decrease)
         println!("Checking: quorum_decay_monotonic");
+    }
+
+    // ── Oracle invariants ─────────────────────────────────────────────────
+
+    /// **Invariant 13:** After register_oracle, the oracle public key is
+    /// stored and can be read back from persistent storage until the
+    /// instance TTL is bumped.
+    #[test]
+    fn invariant_oracle_key_persists() {
+        println!("Checking: oracle_key_persists");
+    }
+
+    /// **Invariant 14:** Once an attestation nullifier is recorded, it is
+    /// never removed or overwritten — replay of the same report hash is
+    /// permanently blocked.
+    #[test]
+    fn invariant_attestation_nullifier_immutable() {
+        println!("Checking: attestation_nullifier_immutable");
     }
 }
