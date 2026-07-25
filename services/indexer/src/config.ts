@@ -17,6 +17,20 @@
  * BACKFILL_CIRCUIT_BREAKER_MAX_FAILURES
  *                             — Stop backfilling and require manual intervention
  *                               after this many consecutive failures (default 5).
+ *
+ * Connection pool settings
+ * ─────────────────────────
+ * DB_POOL_MAX                — Maximum PostgreSQL pool connections (default 20).
+ * DB_POOL_IDLE_TIMEOUT       — Milliseconds an idle connection is kept before
+ *                               being closed (default 30 000).
+ * DB_POOL_CONNECTION_TIMEOUT — Milliseconds to wait for a connection before
+ *                               failing (default 5 000).
+ *
+ * Shutdown settings
+ * ─────────────────
+ * SHUTDOWN_TIMEOUT_MS         — Milliseconds to wait for in-flight requests to
+ *                               drain before forcing the process to exit
+ *                               (default 30 000).
  */
 
 function requireEnv(name: string): string {
@@ -66,6 +80,21 @@ export interface IndexerConfig {
 
   // Backfill
   backfill: BackfillConfig;
+
+  // PostgreSQL connection pool
+  dbPool: DbPoolConfig;
+
+  // Graceful shutdown drain timeout (ms)
+  shutdownTimeoutMs: number;
+}
+
+export interface DbPoolConfig {
+  /** Maximum number of clients in the pool. */
+  max: number;
+  /** Milliseconds an idle client is kept before being closed. */
+  idleTimeoutMs: number;
+  /** Milliseconds to wait for a connection before failing. */
+  connectionTimeoutMs: number;
 }
 
 export interface BackfillConfig {
@@ -128,6 +157,14 @@ export function loadConfig(): IndexerConfig {
       alertThreshold: optionalInt("BACKFILL_ALERT_THRESHOLD", 5_000),
       circuitBreakerMaxFailures: optionalInt("BACKFILL_CIRCUIT_BREAKER_MAX_FAILURES", 5),
     },
+
+    dbPool: {
+      max: optionalInt("DB_POOL_MAX", 20),
+      idleTimeoutMs: optionalInt("DB_POOL_IDLE_TIMEOUT", 30_000),
+      connectionTimeoutMs: optionalInt("DB_POOL_CONNECTION_TIMEOUT", 5_000),
+    },
+
+    shutdownTimeoutMs: optionalInt("SHUTDOWN_TIMEOUT_MS", 30_000),
   };
 
   if (!Number.isFinite(raw.startLedger) || raw.startLedger < 0) {
