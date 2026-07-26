@@ -5,15 +5,15 @@
  * direct messaging without central key management.
  */
 
-import { LinkoraClient } from "../client";
+import { LinkoraClient } from "../client.js";
 import { Keypair } from "@stellar/stellar-base";
 import {
   generateDmKeypair,
   encryptDirectMessage,
   decryptDirectMessage,
   type DmKeyPair,
-} from "./crypto";
-import { RelayClient, type ConversationMessage } from "./relay";
+} from "./crypto.js";
+import { RelayClient, type ConversationMessage } from "./relay.js";
 
 interface WalletLike {
   networkPassphrase?: string;
@@ -34,7 +34,7 @@ export {
   decryptDirectMessage,
   DecryptionError,
   type DmKeyPair,
-} from "./crypto";
+} from "./crypto.js";
 
 export {
   RelayClient,
@@ -44,7 +44,10 @@ export {
   type ConversationMessage,
   type SendMessageRequest,
   type GetMessagesResponse,
-} from "./relay";
+  type ConnectionState,
+  type ConnectionStateCallback,
+  type RelayClientConfig,
+} from "./relay.js";
 
 /**
  * High-level DM service that combines contract interaction, encryption, and relay communication
@@ -63,7 +66,7 @@ export class DmService {
       rpcUrl: wallet?.rpcUrl || "https://soroban-testnet.stellar.org",
       contractId: process.env.NEXT_PUBLIC_CONTRACT_ID || "",
     });
-    this.relayClient = new RelayClient(relayUrl);
+    this.relayClient = new RelayClient({ baseUrl: relayUrl });
     this.userAddress = wallet?.address || wallet?.publicKey || "";
     this.wallet = wallet;
   }

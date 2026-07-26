@@ -10,18 +10,19 @@ import {
   StrKey,
   xdr,
 } from "@stellar/stellar-base";
-import { GeneratedLinkoraClient } from "./generated/client";
-import { Profile, Post, Pool, SimulationResult, LedgerFootprint } from "./types";
+import { GeneratedLinkoraClient } from "./generated/client.js";
+import { Profile, Post, Pool, SimulationResult, LedgerFootprint } from "./types.js";
 import {
   mapError,
   NotFoundError,
   SimulationError,
   ValidationError,
   NetworkError,
-} from "./errors";
-import { GovParameter } from "./generated/types";
-import type { GovProposal } from "./generated/types";
-import { ConnectionHealthMonitor, HealthCheckConfig, ConnectionStatusCallback } from "./health";
+} from "./errors.js";
+import { GovParameter } from "./generated/types.js";
+import type { GovProposal } from "./generated/types.js";
+import { ConnectionHealthMonitor, HealthCheckConfig, ConnectionStatusCallback } from "./health.js";
+import { fetchWithTimeout } from "./utils/fetch.js";
 
 const { isSimulationError, isSimulationSuccess } = rpc.Api;
 
@@ -102,6 +103,8 @@ export interface ClientConfig {
   tokenFactoryId?: string;
   /** Connection health-check options */
   healthCheck?: HealthCheckConfig & { autoStart?: boolean };
+  /** Timeout in ms for HTTP requests (default 30 000). */
+  timeoutMs?: number;
 }
 
 export interface DeployCreatorTokenParams {
@@ -130,6 +133,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
   private readonly _networkPassphrase: string;
   private readonly _contractId: string;
   private readonly _healthMonitor: ConnectionHealthMonitor;
+  private readonly _timeoutMs: number;
 
   constructor(config: ClientConfig) {
     super({
@@ -141,6 +145,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     this.tokenFactoryId = config.tokenFactoryId;
     this._rpcUrl = config.rpcUrl;
     this._networkPassphrase = config.networkPassphrase || DEFAULT_NETWORK;
+    this._timeoutMs = config.timeoutMs ?? 30_000;
 
     const { autoStart, ...healthCfg } = config.healthCheck ?? {};
     this._healthMonitor = new ConnectionHealthMonitor(this._rpcUrl, healthCfg);
@@ -719,7 +724,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
         ? "https://horizon-testnet.stellar.org"
         : "https://horizon.stellar.org");
 
-    const res = await fetch(`${horizon}/accounts/${userAddress}`);
+    const res = await fetchWithTimeout(`${horizon}/accounts/${userAddress}`, undefined, this._timeoutMs);
     if (!res.ok) {
       throw new NetworkError(
         `Could not fetch account from Horizon (HTTP ${res.status}). ` +

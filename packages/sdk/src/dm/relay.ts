@@ -7,6 +7,9 @@
 
 import { Keypair } from "@stellar/stellar-base";
 import { sha256 } from "@noble/hashes/sha256";
+import { fetchWithTimeout } from "../utils/fetch.js";
+
+const DEFAULT_RELAY_TIMEOUT_MS = 30_000;
 
 export interface RelayMessage {
   sender: string;
@@ -49,28 +52,80 @@ export class RelayAuthError extends Error {
   }
 }
 
+export type ConnectionState = "connected" | "disconnected" | "reconnecting";
+
+export type ConnectionStateCallback = (state: ConnectionState) => void;
+
+export interface RelayClientConfig {
+  /** Base URL of the relay service. */
+  baseUrl: string;
+  /** Timeout in ms for HTTP requests (default 30 000). */
+  timeoutMs?: number;
+  /** Maximum number of WebSocket reconnect attempts (default: Infinity). */
+  maxReconnectAttempts?: number;
+}
+
 export class RelayClient {
   private baseUrl: string;
+  private readonly timeoutMs: number;
+  private readonly maxReconnectAttempts: number;
   private ws: WebSocket | null = null;
   private messageListeners: Set<(payload: Record<string, unknown>) => void> = new Set();
+  private stateListeners: Set<ConnectionStateCallback> = new Set();
   private reconnectAttempts: number = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private wsAddress: string = "";
+  private permanentlyClosed: boolean = false;
+  private _connectionState: ConnectionState = "disconnected";
 
-  constructor(baseUrl: string) {
-    this.baseUrl = baseUrl.replace(/\/$/, "");
+  constructor(config: string | RelayClientConfig) {
+    if (typeof config === "string") {
+      this.baseUrl = config.replace(/\/$/, "");
+      this.timeoutMs = DEFAULT_RELAY_TIMEOUT_MS;
+      this.maxReconnectAttempts = Infinity;
+    } else {
+      this.baseUrl = config.baseUrl.replace(/\/$/, "");
+      this.timeoutMs = config.timeoutMs ?? DEFAULT_RELAY_TIMEOUT_MS;
+      this.maxReconnectAttempts = config.maxReconnectAttempts ?? Infinity;
+    }
+  }
+
+  /** Current WebSocket connection state. */
+  get connectionState(): ConnectionState {
+    return this._connectionState;
+  }
+
+  private setConnectionState(state: ConnectionState): void {
+    if (this._connectionState === state) return;
+    this._connectionState = state;
+    for (const listener of this.stateListeners) {
+      listener(state);
+    }
+  }
+
+  /**
+   * Register a callback for WebSocket connection state changes.
+   *
+   * @param callback Invoked when the state transitions between
+   *   "connected", "disconnected", and "reconnecting".
+   * @returns Unsubscribe function.
+   */
+  onConnectionStateChange(callback: ConnectionStateCallback): () => void {
+    this.stateListeners.add(callback);
+    return () => this.stateListeners.delete(callback);
   }
 
   /**
    * Connect to the real-time WebSocket for pushes.
    */
   connectWs(address: string) {
-    if (this.ws) return;
+    if (this.ws || this.permanentlyClosed) return;
     this.wsAddress = address;
     const wsUrl = this.baseUrl.replace(/^http/, "ws") + `/ws?address=${address}`;
     this.ws = new WebSocket(wsUrl);
     this.ws.onopen = () => {
       this.reconnectAttempts = 0;
+      this.setConnectionState("connected");
     };
     this.ws.onmessage = (event: MessageEvent) => {
       try {
@@ -83,12 +138,32 @@ export class RelayClient {
     };
     this.ws.onclose = () => {
       this.ws = null;
+      this.setConnectionState("disconnected");
       this.scheduleReconnect();
     };
   }
 
+  /**
+   * Permanently close the WebSocket connection and stop all reconnection attempts.
+   */
+  stop(): void {
+    this.permanentlyClosed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+    this.setConnectionState("disconnected");
+  }
+
   private scheduleReconnect() {
-    if (this.reconnectTimer) return;
+    if (this.reconnectTimer || this.permanentlyClosed) return;
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) return;
+
+    this.setConnectionState("reconnecting");
     const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
     this.reconnectAttempts++;
     this.reconnectTimer = setTimeout(() => {
@@ -147,13 +222,13 @@ export class RelayClient {
       signature,
     };
 
-    const response = await fetch(`${this.baseUrl}/messages`, {
+    const response = await fetchWithTimeout(`${this.baseUrl}/messages`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify(request),
-    });
+    }, this.timeoutMs);
 
     if (!response.ok) {
       const error = await response.text();
@@ -184,7 +259,7 @@ export class RelayClient {
       params.set("cursor", cursor);
     }
 
-    const response = await fetch(`${this.baseUrl}/messages/${conversationId}?${params}`);
+    const response = await fetchWithTimeout(`${this.baseUrl}/messages/${conversationId}?${params}`, undefined, this.timeoutMs);
 
     if (!response.ok) {
       throw new Error(`Failed to fetch messages: ${response.status}`);
@@ -208,7 +283,7 @@ export class RelayClient {
    * Check relay service health and connectivity.
    */
   async health(): Promise<{ status: string; timestamp: number }> {
-    const response = await fetch(`${this.baseUrl}/health`);
+    const response = await fetchWithTimeout(`${this.baseUrl}/health`, undefined, this.timeoutMs);
 
     if (!response.ok) {
       throw new Error(`Health check failed: ${response.status}`);

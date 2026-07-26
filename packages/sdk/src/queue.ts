@@ -18,9 +18,9 @@
  * deadline is exceeded the step is treated as a failure and rollbacks fire.
  */
 
-import { CircuitBreakerError, NetworkError, SigningError, SimulationError } from "./errors";
-import { resolveRetryConfig, type RetryConfig } from "./config";
-import { CircuitBreaker, withRetry, type RetryLogger } from "./utils/retry";
+import { CircuitBreakerError, NetworkError, SigningError, SimulationError } from "./errors.js";
+import { resolveRetryConfig, type RetryConfig } from "./config.js";
+import { CircuitBreaker, withRetry, type RetryLogger } from "./utils/retry.js";
 
 export type TxStatus = "pending" | "simulated" | "submitted" | "confirmed" | "failed";
 

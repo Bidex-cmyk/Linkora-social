@@ -5,8 +5,8 @@
  * any particular RPC client.
  */
 
-import { CircuitBreakerError } from "../errors";
-import type { RetryConfig } from "../config";
+import { CircuitBreakerError } from "../errors.js";
+import type { RetryConfig } from "../config.js";
 
 /**
  * Compute a backoff delay in ms for a given zero-based attempt index.

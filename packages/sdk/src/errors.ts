@@ -117,6 +117,15 @@ export class SigningError extends LinkoraError {
 }
 
 /**
+ * Thrown when an HTTP request exceeds the configured timeout.
+ */
+export class TimeoutError extends LinkoraError {
+  constructor(message: string, details?: Record<string, unknown>, originalError?: unknown) {
+    super(message, "TIMEOUT", details, originalError);
+  }
+}
+
+/**
  * Thrown when an on-chain contract invocation fails (simulation error, contract
  * FAILED status, or a diagnostic trap returned by Soroban).
  */
