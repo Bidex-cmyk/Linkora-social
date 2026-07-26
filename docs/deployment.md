@@ -8,6 +8,8 @@ This guide covers production deployment of the three Linkora backend services:
 | `services/dm-relay`         | 3001         | Transport-only E2EE direct-message relay               |
 | `services/analytics-oracle` | 4000         | Ed25519 analytics attestation oracle                   |
 
+
+
 ---
 
 ## Table of Contents
@@ -702,3 +704,9 @@ The `ORACLE_PRIVATE_KEY_HEX` is a 32-byte Ed25519 key. If lost, a new key must b
 ### Redis
 
 Redis holds only transient rate-limit state. No backup is required — on restart the in-memory counters reset gracefully and services continue operating.
+
+
+
+
+
+## 
