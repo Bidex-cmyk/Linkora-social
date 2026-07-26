@@ -124,6 +124,23 @@ async function main() {
   const pool = new Pool({ connectionString: databaseUrl });
 
   try {
+    const files = readdirSync(MIGRATIONS_DIR)
+      .filter((f) => f.endsWith(".sql"))
+      .sort();
+
+    if (files.length === 0) {
+      console.log("No migration files found in", MIGRATIONS_DIR);
+      return;
+    }
+
+    for (const file of files) {
+      const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");
+      console.log(`Running migration: ${file}`);
+      await pool.query(sql);
+      console.log(`  Done.`);
+    }
+
+    console.log(`Migrations complete (${files.length} file(s) executed).`);
     await ensureSchemaMigrationsTable(pool);
 
     const command = process.argv[2];
@@ -142,7 +159,7 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  logger.error({ err }, "Migration runner failed");
+migrate().catch((err) => {
+  console.error("Migration failed:", err);
   process.exit(1);
 });

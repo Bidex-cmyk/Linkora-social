@@ -4,6 +4,7 @@
  * Verifies Stellar signatures to prevent unauthorized message submission.
  */
 
+import { randomUUID } from "crypto";
 import { Keypair, StrKey } from "@stellar/stellar-sdk";
 import { sha256 } from "@noble/hashes/sha256";
 
@@ -206,5 +207,68 @@ export class AuthService {
     const hash = sha256(new TextEncoder().encode(authMessage));
     const signature = keypair.sign(Buffer.from(hash));
     return Buffer.from(signature).toString("hex");
+  }
+
+  /**
+   * Create a WebSocket challenge for the given address.
+   * Returns the challenge string the client must sign and the timestamp.
+   */
+  createWsChallenge(address: string): { challenge: string; timestamp: number } {
+    if (!StrKey.isValidEd25519PublicKey(address)) {
+      throw new AuthError("Invalid address format");
+    }
+    const timestamp = Math.floor(Date.now() / 1000);
+    const nonce = randomUUID();
+    const challenge = `ws_challenge:${address}:${nonce}:${timestamp}`;
+    return { challenge, timestamp };
+  }
+
+  /**
+   * Verify a WebSocket challenge-response signature.
+   *
+   * @param address - The Stellar address claiming to own the connection
+   * @param challenge - The original challenge string sent by the server
+   * @param timestamp - The timestamp from the challenge
+   * @param signatureHex - The client's Ed25519 signature (hex-encoded)
+   * @throws AuthError if verification fails
+   */
+  verifyWsChallenge(
+    address: string,
+    challenge: string,
+    timestamp: number,
+    signatureHex: string
+  ): void {
+    // Validate address format
+    if (!StrKey.isValidEd25519PublicKey(address)) {
+      throw new AuthError("Invalid address format");
+    }
+
+    // Check timestamp freshness
+    const now = Math.floor(Date.now() / 1000);
+    const skew = Math.abs(now - timestamp);
+    if (skew > this.maxTimestampSkew) {
+      throw new AuthError(
+        `Challenge timestamp expired. Skew: ${skew}s, max: ${this.maxTimestampSkew}s`
+      );
+    }
+
+    // Verify the challenge format matches what we'd generate
+    const expectedPrefix = `ws_challenge:${address}:`;
+    if (!challenge.startsWith(expectedPrefix)) {
+      throw new AuthError("Invalid challenge format");
+    }
+
+    // Verify signature
+    const hash = sha256(new TextEncoder().encode(challenge));
+    const signature = Buffer.from(signatureHex, "hex");
+    if (signature.length !== 64) {
+      throw new AuthError("Invalid signature length");
+    }
+
+    const keypair = Keypair.fromPublicKey(address);
+    const valid = keypair.verify(Buffer.from(hash), signature);
+    if (!valid) {
+      throw new AuthError("Invalid WebSocket challenge signature");
+    }
   }
 }
