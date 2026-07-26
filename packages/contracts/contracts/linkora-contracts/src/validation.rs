@@ -15,9 +15,23 @@ const ZERO_CONTRACT_ADDRESS: &str = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 
 // Reserved usernames that cannot be claimed
 const RESERVED_WORDS: &[&str] = &[
-    "admin", "system", "moderator", "bot", "root", "support",
-    "help", "feedback", "contact", "info", "status", "health",
-    "api", "app", "web", "mobile", "linkora",
+    "admin",
+    "system",
+    "moderator",
+    "bot",
+    "root",
+    "support",
+    "help",
+    "feedback",
+    "contact",
+    "info",
+    "status",
+    "health",
+    "api",
+    "app",
+    "web",
+    "mobile",
+    "linkora",
 ];
 
 #[macro_export]
@@ -74,13 +88,13 @@ pub fn validate_username(env: &Env, username: &String) {
     validate_string_max_len(env, "username", username, MAX_NAME_LEN);
 
     // Check for alphanumeric, underscore, and hyphen only
-    let username_bytes = username.as_bytes();
-    for (idx, byte) in username_bytes.iter().enumerate() {
-        let is_valid = (*byte >= b'a' && *byte <= b'z') // a-z
-            || (*byte >= b'A' && *byte <= b'Z') // A-Z
-            || (*byte >= b'0' && *byte <= b'9') // 0-9
-            || *byte == b'_' // underscore
-            || *byte == b'-'; // hyphen
+    let username_bytes = username.to_bytes();
+    for byte in username_bytes.iter() {
+        let is_valid = (byte >= b'a' && byte <= b'z') // a-z
+            || (byte >= b'A' && byte <= b'Z') // A-Z
+            || (byte >= b'0' && byte <= b'9') // 0-9
+            || byte == b'_' // underscore
+            || byte == b'-'; // hyphen
 
         require_with_error!(
             env,
@@ -93,7 +107,7 @@ pub fn validate_username(env: &Env, username: &String) {
     if let Some(first_byte) = username_bytes.first() {
         require_with_error!(
             env,
-            *first_byte != b'_' && *first_byte != b'-',
+            first_byte != b'_' && first_byte != b'-',
             "username cannot start with underscore or hyphen"
         );
     }
@@ -101,17 +115,23 @@ pub fn validate_username(env: &Env, username: &String) {
     if let Some(last_byte) = username_bytes.last() {
         require_with_error!(
             env,
-            *last_byte != b'_' && *last_byte != b'-',
+            last_byte != b'_' && last_byte != b'-',
             "username cannot end with underscore or hyphen"
         );
     }
 
-    // Check for reserved words (case-insensitive)
-    let username_lower = username.to_utf8().unwrap_or_default().to_lowercase();
+    // Check for reserved words (case-insensitive). Usernames are ASCII-only
+    // (enforced above), so a byte-wise ASCII lowercase is sufficient here.
+    let mut lower = [0u8; MAX_NAME_LEN as usize];
+    let len = username_bytes.len() as usize;
+    username_bytes.copy_into_slice(&mut lower[..len]);
+    for b in lower[..len].iter_mut() {
+        b.make_ascii_lowercase();
+    }
     for reserved in RESERVED_WORDS.iter() {
         require_with_error!(
             env,
-            username_lower.as_str() != *reserved,
+            &lower[..len] != reserved.as_bytes(),
             format!("username '{reserved}' is reserved and cannot be used")
         );
     }
@@ -119,11 +139,7 @@ pub fn validate_username(env: &Env, username: &String) {
 
 pub fn validate_content(env: &Env, content: &String) {
     // Ensure content is not empty
-    require_with_error!(
-        env,
-        !content.is_empty(),
-        "content cannot be empty"
-    );
+    require_with_error!(env, !content.is_empty(), "content cannot be empty");
 
     // Validate against configurable content limit
     validate_string_max_len(env, "content", content, MAX_CONTENT_LEN);

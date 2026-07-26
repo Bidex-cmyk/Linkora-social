@@ -104,3 +104,12 @@ jobs:
 
       - name: Run unit tests
         run: cargo test
+
+      - name: Run fuzz / invariant property tests
+        run: |
+          cargo test -p linkora-contracts --test fuzz_social_graph
+          cargo test -p linkora-contracts --test invariant_social_graph
+          cargo test -p linkora-contracts --test fuzz_tip
+          cargo test -p linkora-contracts --test fuzz_credential
+          cargo test -p linkora-contracts --test fuzz_governance
+          cargo test -p linkora-contracts --test fuzz_oracle
