@@ -252,9 +252,18 @@ export class AuthService {
       );
     }
 
-    // Verify the challenge format matches what we'd generate
+    // Verify the challenge format matches what we'd generate:
+    // ws_challenge:<address>:<uuid>:<timestamp>  (exactly 4 colon-separated parts)
     const expectedPrefix = `ws_challenge:${address}:`;
     if (!challenge.startsWith(expectedPrefix)) {
+      throw new AuthError("Invalid challenge format");
+    }
+    const parts = challenge.split(":");
+    if (parts.length !== 4) {
+      throw new AuthError("Invalid challenge format");
+    }
+    const challengeTimestamp = parseInt(parts[3], 10);
+    if (isNaN(challengeTimestamp) || challengeTimestamp !== timestamp) {
       throw new AuthError("Invalid challenge format");
     }
 

@@ -73,16 +73,17 @@ export function notFoundHandler(req: Request, res: Response) {
   });
 }
 
-export function validateContentType(req: Request, res: Response, next: NextFunction) {
+export function validateContentType(req: Request, res: Response, next: NextFunction): void {
   if (req.method === "POST") {
     if (!req.is("application/json")) {
-      return res.status(400).json({
+      res.status(400).json({
         error: {
           code: "VALIDATION_ERROR",
           message: "Content-Type must be application/json",
           requestId: req.requestId,
         },
       });
+      return;
     }
   }
   next();
