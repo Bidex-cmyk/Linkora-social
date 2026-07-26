@@ -1,5 +1,5 @@
-import { Signer, TransactionLike } from "../types";
-import { SigningError } from "../errors";
+import { Signer, TransactionLike } from "../types.js";
+import { SigningError } from "../errors.js";
 
 /** Well-known Stellar network passphrases. */
 export const NETWORK_PASSPHRASES = {

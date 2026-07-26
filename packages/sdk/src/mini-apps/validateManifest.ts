@@ -1,5 +1,5 @@
 import Ajv from "ajv";
-import { InvalidManifestError } from "../errors";
+import { InvalidManifestError } from "../errors.js";
 
 const manifestSchema = {
   type: "object",
