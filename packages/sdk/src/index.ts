@@ -17,5 +17,6 @@ export { LinkoraEvent, parseContractEvent } from "./events/types";
 export type { RawLinkoraEvent, parseRawContractEvent } from "./generated/events";
 export * as dm from "./dm";
 export * from "./dm";
+// TODO(#1045): Ensure DmService and LinkoraEventSubscriber are explicitly re-exported here
 export * from "./signers/freighter";
 export * from "./queue";

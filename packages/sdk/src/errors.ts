@@ -237,6 +237,7 @@ function mapByRegex(msg: string, err: unknown): LinkoraError {
   return new LinkoraError(msg, "LINKORA_ERROR", undefined, err);
 }
 
+// TODO(#1043): Add instanceof SimulationError check before regex fallback
 export function mapError(err: unknown): LinkoraError {
   const codeMapped = tryMapByErrorCode(err);
   if (codeMapped) return codeMapped;

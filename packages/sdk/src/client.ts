@@ -47,6 +47,7 @@ function ensureNonEmptyString(value: string, fieldName: string): void {
   }
 }
 
+// TODO(#1042): Add isValidContractAddress() helper for Stellar contract address validation
 function ensureAddress(value: string, fieldName: string): void {
   ensureNonEmptyString(value, fieldName);
   if (!StrKey.isValidEd25519PublicKey(value)) {
@@ -469,6 +470,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     return readyBuilder.build() as Transaction;
   }
 
+// TODO(#1044): Add pagination support (cursor, limit params) to event fetching methods
   // ── Override read methods with error handling ─────────────────────────────
 
   /**
