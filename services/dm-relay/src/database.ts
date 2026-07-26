@@ -3,6 +3,8 @@
  */
 
 import { Pool } from "pg";
+import fs from "fs";
+import path from "path";
 import { logger } from "./logger";
 
 export interface DbMessage {
@@ -38,7 +40,7 @@ class Database {
   }
 
   async init(): Promise<void> {
-    await this.createTables();
+    await this.runMigrations();
     logger.info("Database initialized successfully");
   }
 
@@ -46,51 +48,43 @@ class Database {
     await this.pool.query("SELECT 1");
   }
 
-  private async createTables(): Promise<void> {
-    const createMessagesTable = `
-      CREATE TABLE IF NOT EXISTS dm_messages (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        conversation_id VARCHAR(64) NOT NULL,
-        sender VARCHAR(56) NOT NULL,
-        recipient VARCHAR(56) NOT NULL,
-        ciphertext_b64 TEXT NOT NULL,
-        message_index INTEGER NOT NULL,
-        timestamp BIGINT NOT NULL,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-        
-        CONSTRAINT unique_sender_message_index UNIQUE (sender, recipient, message_index)
+  private async runMigrations(): Promise<void> {
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        filename   VARCHAR(255) PRIMARY KEY,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
-    `;
+    `);
 
-    const createIndexes = `
-      CREATE INDEX IF NOT EXISTS idx_dm_messages_conversation_created
-        ON dm_messages (conversation_id, created_at DESC);
+    const appliedResult = await this.pool.query(
+      "SELECT filename FROM schema_migrations ORDER BY filename"
+    );
+    const applied = new Set(appliedResult.rows.map((r) => r.filename));
 
-      CREATE INDEX IF NOT EXISTS idx_dm_messages_created_at
-        ON dm_messages (created_at);
+    const migrationsDir = path.resolve(__dirname, "../migrations");
+    const files = fs
+      .readdirSync(migrationsDir)
+      .filter((f) => f.endsWith(".sql"))
+      .sort();
 
-      CREATE INDEX IF NOT EXISTS idx_dm_messages_timestamp
-        ON dm_messages (timestamp);
-    `;
+    for (const filename of files) {
+      if (applied.has(filename)) continue;
 
-    const createIdempotencyTable = `
-      CREATE TABLE IF NOT EXISTS message_idempotency (
-        idempotency_key UUID PRIMARY KEY,
-        response_status INT NOT NULL,
-        response_body JSONB NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-    `;
+      const sql = fs.readFileSync(path.join(migrationsDir, filename), "utf-8");
 
-    const createIdempotencyIndex = `
-      CREATE INDEX IF NOT EXISTS idx_message_idempotency_created_at
-        ON message_idempotency (created_at);
-    `;
-
-    await this.pool.query(createMessagesTable);
-    await this.pool.query(createIndexes);
-    await this.pool.query(createIdempotencyTable);
-    await this.pool.query(createIdempotencyIndex);
+      logger.info({ migration: filename }, "Applying migration");
+      await this.pool.query("BEGIN");
+      try {
+        await this.pool.query(sql);
+        await this.pool.query("INSERT INTO schema_migrations (filename) VALUES ($1)", [filename]);
+        await this.pool.query("COMMIT");
+        logger.info({ migration: filename }, "Migration applied");
+      } catch (error) {
+        await this.pool.query("ROLLBACK");
+        logger.error({ migration: filename, err: error }, "Migration failed");
+        throw error;
+      }
+    }
   }
 
   async insertMessage(
@@ -183,10 +177,10 @@ class Database {
   async deleteExpiredMessages(ttlDays: number): Promise<number> {
     const query = `
       DELETE FROM dm_messages
-      WHERE created_at < NOW() - INTERVAL '${ttlDays} days'
+      WHERE created_at < NOW() - $1::integer * INTERVAL '1 day'
     `;
 
-    const result = await this.pool.query(query);
+    const result = await this.pool.query(query, [ttlDays]);
     return result.rowCount || 0;
   }
 
@@ -261,10 +255,10 @@ class Database {
     const hours = Math.max(0, Math.floor(ttlHours));
     const query = `
       DELETE FROM message_idempotency
-      WHERE created_at < NOW() - INTERVAL '${hours} hours'
+      WHERE created_at < NOW() - $1::integer * INTERVAL '1 hour'
     `;
 
-    const result = await this.pool.query(query);
+    const result = await this.pool.query(query, [hours]);
     return result.rowCount || 0;
   }
 

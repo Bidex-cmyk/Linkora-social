@@ -23,8 +23,8 @@ import {
   notFoundHandler,
   validateContentType,
 } from "./middleware";
-import { messageAuthMiddleware } from "./middleware/auth";
-import { rateLimitMiddleware } from "./middleware/rateLimit";
+import { messageAuthMiddleware, addressOwnershipMiddleware } from "./middleware/auth";
+import { rateLimitMiddleware, initRateLimiters } from "./middleware/rateLimit";
 import { createHealthRouter } from "./routes/health";
 import { logger } from "./logger";
 
@@ -58,7 +58,7 @@ async function createApp() {
     cors({
       origin: config.corsOrigin,
       methods: ["GET", "POST"],
-      allowedHeaders: ["Content-Type", "Authorization"],
+      allowedHeaders: ["Content-Type", "Authorization", "X-Idempotency-Key"],
       credentials: false, // No cookies/credentials needed
     })
   );
@@ -82,6 +82,9 @@ async function createApp() {
   );
   cleanupService.start();
 
+  // Initialise rate limiters (upgrades to Redis store when REDIS_URL is set).
+  await initRateLimiters();
+
   // Custom middleware
   app.use(requestIdMiddleware);
   app.use(requestLoggerMiddleware);
@@ -89,10 +92,21 @@ async function createApp() {
 
   // Rate limiting
   app.use("/api", rateLimitMiddleware);
-  const messageAuth = messageAuthMiddleware(authService);
-  app.use("/api/messages", messageAuth);
 
-  // API routes
+  // API routes with auth middleware
+  const messageAuth = messageAuthMiddleware(authService);
+  const addressAuth = addressOwnershipMiddleware(authService);
+  app.use("/api", (req, res, next) => {
+    // POST /messages — verify message signature
+    if (req.method === "POST" && req.path === "/messages") {
+      return messageAuth(req, res, next);
+    }
+    // GET /messages/:address — verify address ownership
+    if (req.method === "GET" && /^\/messages\/[A-Z]/.test(req.path)) {
+      return addressAuth(req, res, next);
+    }
+    next();
+  });
   app.use("/api", createRouter(database, authService));
 
   // ── Health endpoints ───────────────────────────────────────────────────────
@@ -137,59 +151,94 @@ async function createApp() {
   app.use(errorHandler);
 
   // WebSocket server for real-time push to online recipients
-  // Clients connect with ?address=<STELLAR_ADDRESS> and must complete a
-  // challenge-response handshake to prove ownership of the address.
+  // Clients connect with ?address=<STELLAR_ADDRESS>&timestamp=<TS>&signature=<SIG>
+  // to authenticate and receive their messages.
   const httpServer = http.createServer(app);
   const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 
-  const WS_AUTH_TIMEOUT_MS = 15_000;
+  const MAX_WS_CONNECTIONS_PER_ADDRESS = 5;
+  const WS_RATE_LIMIT_WINDOW_MS = 60_000;
+  const WS_RATE_LIMIT_MAX = 30;
+  const wsConnectionCounts = new Map<string, number>();
+  const wsIpRateLimit = new Map<string, { count: number; resetAt: number }>();
 
-  wss.on("connection", (ws: WebSocket, req) => {
+  function getWsClientIp(req: http.IncomingMessage): string {
+    const xff = req.headers["x-forwarded-for"];
+    if (typeof xff === "string") return xff.split(",")[0].trim();
+    return req.socket.remoteAddress || "unknown";
+  }
+
+  function isWsIpRateLimited(ip: string): boolean {
+    const now = Date.now();
+    const entry = wsIpRateLimit.get(ip);
+    if (!entry || now > entry.resetAt) {
+      wsIpRateLimit.set(ip, { count: 1, resetAt: now + WS_RATE_LIMIT_WINDOW_MS });
+      return false;
+    }
+    entry.count++;
+    return entry.count > WS_RATE_LIMIT_MAX;
+  }
+
+  wss.on("connection", (ws: WebSocket, req: http.IncomingMessage) => {
+    const clientIp = getWsClientIp(req);
     const url = new URL(req.url ?? "/", "http://localhost");
     const address = url.searchParams.get("address") ?? "";
+    const timestampStr = url.searchParams.get("timestamp") ?? "";
+    const signature = url.searchParams.get("signature") ?? "";
 
-    if (!address) {
-      ws.close(1008, "Missing address query param");
+    // Rate limit per IP
+    if (isWsIpRateLimited(clientIp)) {
+      logger.warn({ ip: clientIp }, "WebSocket rate limit exceeded");
+      ws.close(1008, "Rate limit exceeded");
       return;
     }
 
-    // Send a challenge that the client must sign to prove ownership
-    const { challenge, timestamp } = authService.createWsChallenge(address);
-    ws.send(JSON.stringify({ type: "challenge", challenge, timestamp }));
+    // Validate required auth params
+    if (!address || !timestampStr || !signature) {
+      ws.close(1008, "Missing required query params: address, timestamp, signature");
+      return;
+    }
 
-    let authenticated = false;
-    const authTimer = setTimeout(() => {
-      if (!authenticated) {
-        ws.close(4001, "Authentication timeout");
+    const timestamp = parseInt(timestampStr, 10);
+    if (isNaN(timestamp)) {
+      ws.close(1008, "Invalid timestamp");
+      return;
+    }
+
+    // Verify address ownership
+    try {
+      authService.verifyAddressOwnership(address, timestamp, signature);
+    } catch (err) {
+      logger.warn({ ip: clientIp, address }, "WebSocket auth failed");
+      ws.close(1008, "Authentication failed");
+      return;
+    }
+
+    // Enforce max connections per address
+    const currentCount = wsConnectionCounts.get(address) ?? 0;
+    if (currentCount >= MAX_WS_CONNECTIONS_PER_ADDRESS) {
+      logger.warn({ address, count: currentCount }, "WebSocket connection limit reached");
+      ws.close(1008, "Maximum connections per address reached");
+      return;
+    }
+
+    wsConnectionCounts.set(address, currentCount + 1);
+    registerWsClient(address, ws);
+
+    logger.info(
+      { address, ip: clientIp, connections: currentCount + 1 },
+      "WebSocket client connected (authenticated)"
+    );
+
+    ws.on("close", () => {
+      const count = wsConnectionCounts.get(address) ?? 1;
+      if (count <= 1) {
+        wsConnectionCounts.delete(address);
+      } else {
+        wsConnectionCounts.set(address, count - 1);
       }
-    }, WS_AUTH_TIMEOUT_MS);
-
-    const onAuthMessage = (data: Buffer) => {
-      if (authenticated) return;
-
-      try {
-        const msg = JSON.parse(data.toString());
-        if (msg.type !== "auth_response") return;
-
-        authService.verifyWsChallenge(address, challenge, timestamp, msg.signature);
-
-        clearTimeout(authTimer);
-        authenticated = true;
-        ws.removeListener("message", onAuthMessage);
-
-        registerWsClient(address, ws);
-        ws.send(JSON.stringify({ type: "auth_success" }));
-        logger.info({ address }, "WebSocket client authenticated");
-      } catch (err) {
-        clearTimeout(authTimer);
-        const reason =
-          err instanceof Error ? err.message : "Authentication failed";
-        ws.close(4003, reason);
-        logger.warn({ address, err }, "WebSocket auth failed");
-      }
-    };
-
-    ws.on("message", onAuthMessage);
+      logger.info({ address, ip: clientIp }, "WebSocket client disconnected");
+    });
   });
 
   // Graceful shutdown

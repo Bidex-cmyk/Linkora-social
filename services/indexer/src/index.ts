@@ -33,6 +33,9 @@ import { ScoreRefreshService } from "./score-refresh";
 import { HealthMonitor } from "./services/health-monitor";
 import { BackfillCoordinator } from "./services/backfill-coordinator";
 import { loadConfig } from "./config";
+import { GracefulShutdown } from "./graceful-shutdown";
+import { logger } from "./logger";
+import { initRateLimiter } from "./middleware/rateLimit";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -47,7 +50,77 @@ const SCORE_REFRESH_INTERVAL_MINUTES = cfg.scoreRefreshIntervalMinutes;
 
 // ── Database ──────────────────────────────────────────────────────────────────
 
-const pgPool = new Pool({ connectionString: DATABASE_URL });
+const STATEMENT_TIMEOUT_MS = parseInt(process.env.STATEMENT_TIMEOUT_MS || "30000", 10);
+const LOCK_TIMEOUT_MS = parseInt(process.env.LOCK_TIMEOUT_MS || "10000", 10);
+const SLOW_QUERY_THRESHOLD_MS = parseInt(process.env.SLOW_QUERY_THRESHOLD_MS || "5000", 10);
+const POOL_STATS_LOG_INTERVAL_MS = parseInt(process.env.DB_POOL_STATS_INTERVAL_MS || "60000", 10);
+
+const pgPool = new Pool({
+  connectionString: DATABASE_URL,
+  statement_timeout: STATEMENT_TIMEOUT_MS,
+  lock_timeout: LOCK_TIMEOUT_MS,
+  max: cfg.dbPool.max,
+  idleTimeoutMillis: cfg.dbPool.idleTimeoutMs,
+  connectionTimeoutMillis: cfg.dbPool.connectionTimeoutMs,
+  min: cfg.pgPoolMin,
+  max: cfg.pgPoolMax,
+});
+
+logger.info(
+  {
+    max: cfg.dbPool.max,
+    idleTimeoutMs: cfg.dbPool.idleTimeoutMs,
+    connectionTimeoutMs: cfg.dbPool.connectionTimeoutMs,
+  },
+  "PostgreSQL pool configured"
+);
+
+// Periodically log pool utilisation so saturation is visible before it
+// manifests as connection-timeout errors under load.
+const poolStatsTimer = setInterval(() => {
+  logger.info(
+    {
+      totalCount: pgPool.totalCount,
+      idleCount: pgPool.idleCount,
+      waitingCount: pgPool.waitingCount,
+    },
+    "PostgreSQL pool stats"
+  );
+}, POOL_STATS_LOG_INTERVAL_MS);
+poolStatsTimer.unref();
+
+// Wrap pool.query to log slow queries
+const originalQuery = pgPool.query.bind(pgPool);
+pgPool.query = function (text: string | any, values?: any[] | any, callback?: any) {
+  const startTime = Date.now();
+  const wrappedCallback = (err: Error | null, result: any) => {
+    const duration = Date.now() - startTime;
+    if (duration > SLOW_QUERY_THRESHOLD_MS) {
+      console.warn(
+        `[slow-query] ${duration}ms: ${typeof text === "string" ? text.substring(0, 100) : "prepared statement"}`
+      );
+    }
+    if (callback) callback(err, result);
+  };
+
+  if (typeof values === "function") {
+    return originalQuery(text, wrappedCallback);
+  } else if (callback) {
+    return originalQuery(text, values, wrappedCallback);
+  } else {
+    const promise = originalQuery(text, values);
+    return promise.then((result) => {
+      const duration = Date.now() - startTime;
+      if (duration > SLOW_QUERY_THRESHOLD_MS) {
+        console.warn(
+          `[slow-query] ${duration}ms: ${typeof text === "string" ? text.substring(0, 100) : "prepared statement"}`
+        );
+      }
+      return result;
+    });
+  }
+} as any;
+
 const notificationService = new NotificationService({
   deviceTokenStore: new PostgresDeviceTokenStore(pgPool),
   pool: pgPool,
@@ -175,7 +248,10 @@ function toIngestEvent(event: RawEvent): IngestEvent {
 // ── Graceful shutdown ────────────────────────────────────────────────────────
 
 const healthMonitor = new HealthMonitor(pgPool, STELLAR_RPC_URL);
-const apiApp = createApp(new PostgresDatabase(pgPool), pgPool, healthMonitor);
+const abortController = new AbortController();
+const shutdownFlag = { active: false };
+
+const apiApp = createApp(new PostgresDatabase(pgPool), pgPool, healthMonitor, shutdownFlag);
 const httpServer = http.createServer(apiApp);
 
 const wsHandle = attachWebSocketServer(httpServer, bus, { path: "/ws" });
@@ -183,22 +259,21 @@ const detachNotificationDispatcher = attachNotificationDispatcher(bus, pgPool, n
 
 // ── Lifecycle control ────────────────────────────────────────────────────────
 
-const abortController = new AbortController();
-let shuttingDown = false;
-
-async function shutdown(signal: string): Promise<void> {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  console.log(`[indexer] Received ${signal}, shutting down…`);
-  healthMonitor.markShuttingDown();
-  abortController.abort();
-  scoreRefreshService.stop();
-  detachNotificationDispatcher();
-  await wsHandle.close();
-  httpServer.close();
-  await pgPool.end();
-  console.log("[indexer] Shutdown complete.");
-}
+const gracefulShutdown = new GracefulShutdown({
+  httpServer,
+  pgPool,
+  wsHandle,
+  abortController,
+  scoreRefreshStop: () => scoreRefreshService.stop(),
+  detachNotificationDispatcher,
+  shutdownTimeoutMs: cfg.shutdownTimeoutMs,
+  onSignal: (signal) => {
+    logger.info({ signal }, "Graceful shutdown initiated");
+    healthMonitor.markShuttingDown();
+    clearInterval(poolStatsTimer);
+  },
+  shutdownFlag,
+});
 
 gracefulShutdown.registerSignals();
 
@@ -210,6 +285,9 @@ async function main(): Promise<void> {
     { rpcUrl: STELLAR_RPC_URL, contractId: CONTRACT_ID, startLedger: START_LEDGER },
     "Config"
   );
+
+  // Initialise HTTP rate limiter (upgrades to Redis store when REDIS_URL is set).
+  await initRateLimiter();
 
   await ensureSchema();
 
@@ -342,7 +420,7 @@ async function main(): Promise<void> {
   );
 
   logger.info("Event stream ended, initiating shutdown");
-  await gracefulShutdown.shutdown("stream_end");
+  await gracefulShutdown.shutdown("STREAM_END");
 }
 
 main().catch((err) => {

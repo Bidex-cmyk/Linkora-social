@@ -1459,6 +1459,313 @@ fn test_review_report_rejects_pending_verdict() {
     client.review_report(&admin, &admins, &post_id, &reporter, &ReportStatus::Pending);
 }
 
+// ── Issue #954: report_post + review_report E2E flow with slashing ───────────
+
+#[test]
+fn test_report_post_uphold_with_slashing() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(LinkoraContract, ());
+    let client = LinkoraContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &treasury, &0);
+
+    // Set moderation slash to 10% (1000 bps)
+    env.as_contract(&client.address, || {
+        env.storage().instance().set(&MODERATION_SLASH_BPS, &1000u32);
+    });
+
+    let author = Address::generate(&env);
+    let reporter = Address::generate(&env);
+    let moderator = admin.clone();
+
+    // Creator token for the author (used in profile + slashing)
+    let creator_token = setup_token(&env, &author);
+    let token_client = token::Client::new(&env, &creator_token);
+    // Author approves the contract to burn their creator tokens for slashing
+    token_client.approve(&author, &contract_id, &1_000, &(env.ledger().sequence() + 1000000));
+
+    // Stake token for the reporter
+    let stake_token = setup_token(&env, &reporter);
+
+    // Author sets up profile and creates a post
+    client.set_profile(&author, &String::from_str(&env, "author"), &creator_token);
+    let post_id = client.create_post(&author, &String::from_str(&env, "post to report"));
+
+    // Grant moderator role and create the mods pool
+    client.grant_role(&moderator, &moderator, &Role::Moderator);
+    let mods = symbol_short!("mods");
+    let signers = soroban_sdk::vec![&env, moderator.clone()];
+    client.create_pool(&moderator, &mods, &stake_token, &signers, &1);
+
+    // Report the post with a stake
+    let stake_amount: i128 = 500;
+    client.report_post(
+        &reporter,
+        &post_id,
+        &stake_token,
+        &stake_amount,
+        &BytesN::from_array(&env, &[2u8; 32]),
+    );
+
+    // Snapshot balances before the review
+    let author_balance_before = token_client.balance(&author);
+    let reporter_balance_before =
+        token::Client::new(&env, &stake_token).balance(&reporter);
+    let contract_stake_balance_before =
+        token::Client::new(&env, &stake_token).balance(&contract_id);
+
+    // The stake was transferred to the contract
+    assert_eq!(
+        contract_stake_balance_before, stake_amount,
+        "stake must be held by the contract after report_post"
+    );
+
+    // Review and uphold — slashes 10% of author's creator tokens, refunds reporter's stake
+    client.review_report(&moderator, &signers, &post_id, &reporter, &ReportStatus::Upheld);
+
+    // Post must be removed
+    assert!(
+        client.get_post(&post_id).is_none(),
+        "post must be removed after upheld report"
+    );
+
+    // Author's creator tokens should be slashed by 10% (1000 bps)
+    let expected_slash = author_balance_before * 1000 / 10_000;
+    let author_balance_after = token_client.balance(&author);
+    assert_eq!(
+        author_balance_after,
+        author_balance_before - expected_slash,
+        "author's creator tokens must be slashed by 10% when report is upheld"
+    );
+
+    // Reporter's stake must be refunded
+    let reporter_balance_after =
+        token::Client::new(&env, &stake_token).balance(&reporter);
+    assert_eq!(
+        reporter_balance_after,
+        reporter_balance_before,
+        "reporter's stake must be fully refunded when report is upheld"
+    );
+
+    // Contract no longer holds the stake
+    let contract_stake_balance_after =
+        token::Client::new(&env, &stake_token).balance(&contract_id);
+    assert_eq!(
+        contract_stake_balance_after, 0,
+        "contract must release the stake after upheld review"
+    );
+
+    // Report status must be updated
+    let report = client.get_report(&post_id, &reporter).unwrap();
+    assert_eq!(report.status, ReportStatus::Upheld);
+}
+
+#[test]
+fn test_report_post_dismiss_slashes_reporter() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(LinkoraContract, ());
+    let client = LinkoraContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &treasury, &0);
+
+    let author = Address::generate(&env);
+    let reporter = Address::generate(&env);
+    let moderator = admin.clone();
+
+    // Creator token for the author
+    let creator_token = setup_token(&env, &author);
+    // Stake token for the reporter
+    let stake_token = setup_token(&env, &reporter);
+
+    client.set_profile(&author, &String::from_str(&env, "author"), &creator_token);
+    let post_id = client.create_post(&author, &String::from_str(&env, "post to report"));
+
+    // Grant moderator role and create the mods pool
+    client.grant_role(&moderator, &moderator, &Role::Moderator);
+    let mods = symbol_short!("mods");
+    let signers = soroban_sdk::vec![&env, moderator.clone()];
+    client.create_pool(&moderator, &mods, &stake_token, &signers, &1);
+
+    // Report the post with a stake
+    let stake_amount: i128 = 500;
+    client.report_post(
+        &reporter,
+        &post_id,
+        &stake_token,
+        &stake_amount,
+        &BytesN::from_array(&env, &[3u8; 32]),
+    );
+
+    // Snapshot balances before the review
+    let treasury_balance_before =
+        token::Client::new(&env, &stake_token).balance(&treasury);
+    let reporter_balance_before =
+        token::Client::new(&env, &stake_token).balance(&reporter);
+
+    // Review and dismiss — reporter's stake goes to treasury
+    client.review_report(&moderator, &signers, &post_id, &reporter, &ReportStatus::Dismissed);
+
+    // Post must still exist (dismissed report does not remove the post)
+    assert!(
+        client.get_post(&post_id).is_some(),
+        "post must still exist after dismissed report"
+    );
+
+    // Treasury receives the reporter's stake
+    let treasury_balance_after =
+        token::Client::new(&env, &stake_token).balance(&treasury);
+    assert_eq!(
+        treasury_balance_after,
+        treasury_balance_before + stake_amount,
+        "treasury must receive the reporter's stake when report is dismissed"
+    );
+
+    // Reporter loses their stake
+    let reporter_balance_after =
+        token::Client::new(&env, &stake_token).balance(&reporter);
+    assert_eq!(
+        reporter_balance_after,
+        reporter_balance_before - stake_amount,
+        "reporter's stake must be confiscated when report is dismissed"
+    );
+
+    // Report status must be updated
+    let report = client.get_report(&post_id, &reporter).unwrap();
+    assert_eq!(report.status, ReportStatus::Dismissed);
+}
+
+#[test]
+fn test_report_post_already_reported_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(LinkoraContract, ());
+    let client = LinkoraContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &treasury, &0);
+
+    let author = Address::generate(&env);
+    let reporter = Address::generate(&env);
+    let token = setup_token(&env, &reporter);
+
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
+    let post_id = client.create_post(&author, &String::from_str(&env, "report me twice"));
+
+    // First report succeeds
+    client.report_post(
+        &reporter,
+        &post_id,
+        &token,
+        &100,
+        &BytesN::from_array(&env, &[4u8; 32]),
+    );
+
+    // Second report from the same reporter on the same post must panic
+    client.report_post(
+        &reporter,
+        &post_id,
+        &token,
+        &100,
+        &BytesN::from_array(&env, &[5u8; 32]),
+    );
+}
+
+#[test]
+fn test_report_post_reporter_cannot_report_own_post() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(LinkoraContract, ());
+    let client = LinkoraContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &treasury, &0);
+
+    let author = Address::generate(&env);
+    let token = setup_token(&env, &author);
+
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
+    let post_id = client.create_post(&author, &String::from_str(&env, "my own post"));
+
+    // Author cannot report their own post
+    client.report_post(
+        &author,
+        &post_id,
+        &token,
+        &100,
+        &BytesN::from_array(&env, &[6u8; 32]),
+    );
+}
+
+#[test]
+fn test_report_post_upheld_without_slashing_when_no_allowance() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(LinkoraContract, ());
+    let client = LinkoraContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    client.initialize(&admin, &treasury, &0);
+
+    // Set moderation slash to 10%
+    env.as_contract(&client.address, || {
+        env.storage().instance().set(&MODERATION_SLASH_BPS, &1000u32);
+    });
+
+    let author = Address::generate(&env);
+    let reporter = Address::generate(&env);
+    let moderator = admin.clone();
+
+    let creator_token = setup_token(&env, &author);
+    // Intentionally do NOT approve — slash should be gracefully skipped
+    let stake_token = setup_token(&env, &reporter);
+
+    client.set_profile(&author, &String::from_str(&env, "author"), &creator_token);
+    let post_id = client.create_post(&author, &String::from_str(&env, "graceful skip post"));
+
+    client.grant_role(&moderator, &moderator, &Role::Moderator);
+    let mods = symbol_short!("mods");
+    let signers = soroban_sdk::vec![&env, moderator.clone()];
+    client.create_pool(&moderator, &mods, &stake_token, &signers, &1);
+
+    let stake_amount: i128 = 500;
+    client.report_post(
+        &reporter,
+        &post_id,
+        &stake_token,
+        &stake_amount,
+        &BytesN::from_array(&env, &[7u8; 32]),
+    );
+
+    let author_balance_before = token::Client::new(&env, &creator_token).balance(&author);
+
+    // Uphold — slash should be gracefully skipped due to missing allowance
+    client.review_report(&moderator, &signers, &post_id, &reporter, &ReportStatus::Upheld);
+
+    // Author's creator tokens must NOT be slashed
+    let author_balance_after = token::Client::new(&env, &creator_token).balance(&author);
+    assert_eq!(
+        author_balance_after, author_balance_before,
+        "author's creator tokens must not be slashed without allowance"
+    );
+
+    // Reporter still gets their stake back
+    let reporter_balance_after =
+        token::Client::new(&env, &stake_token).balance(&reporter);
+    assert_eq!(
+        reporter_balance_after, stake_amount,
+        "reporter's stake must still be refunded even when slash is skipped"
+    );
+}
+
 #[test]
 #[should_panic(expected = "already initialized")]
 fn test_initialize_twice_panics() {
@@ -6308,6 +6615,8 @@ fn pay_rent_rejects_tiny_payment() {
     client.set_profile(&user, &String::from_str(&env, "alice"), &token);
 
     client.pay_rent(&user, &token, &1);
+}
+
 // ── Lazy Cleanup Tests ────────────────────────────────────────────────────────
 
 #[test]
@@ -7174,4 +7483,103 @@ fn test_verify_credential_max_depth_proof() {
     let result = client.verify_credential(&user, &leaf, &proof, &nullifier);
 
     assert!(result, "max depth proof should verify correctly");
+}
+
+// ── Issue #956: governance parameter bounds ──────────────────────────────────
+
+#[test]
+#[should_panic(expected = "new_value must be between 0 and 10000")]
+fn test_gov_propose_fee_bps_too_high() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _) = setup_governance(&env);
+
+    let proposer = Address::generate(&env);
+    client.gov_propose(&proposer, &GovParameter::FeeBps, &10_001, &None);
+}
+
+#[test]
+#[should_panic(expected = "new_value must be between 1 and 100")]
+fn test_gov_propose_gov_quorum_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _) = setup_governance(&env);
+
+    let proposer = Address::generate(&env);
+    client.gov_propose(&proposer, &GovParameter::GovQuorum, &0, &None);
+}
+
+#[test]
+#[should_panic(expected = "new_value must be between 1 and 100")]
+fn test_gov_propose_gov_quorum_exceeds_max() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _) = setup_governance(&env);
+
+    let proposer = Address::generate(&env);
+    client.gov_propose(&proposer, &GovParameter::GovQuorum, &101, &None);
+}
+
+#[test]
+#[should_panic(expected = "new_value must be between 1 and")]
+fn test_gov_propose_vote_window_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _) = setup_governance(&env);
+
+    let proposer = Address::generate(&env);
+    client.gov_propose(&proposer, &GovParameter::GovVoteWindow, &0, &None);
+}
+
+#[test]
+#[should_panic(expected = "new_value must be between 1 and")]
+fn test_gov_propose_time_lock_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _) = setup_governance(&env);
+
+    let proposer = Address::generate(&env);
+    client.gov_propose(&proposer, &GovParameter::GovTimeLock, &0, &None);
+}
+
+#[test]
+#[should_panic(expected = "new_address must not be the zero address")]
+fn test_gov_propose_treasury_zero_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _) = setup_governance(&env);
+
+    let proposer = Address::generate(&env);
+    let zero_address = Address::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
+    client.gov_propose(
+        &proposer,
+        &GovParameter::Treasury,
+        &0,
+        &Some(zero_address),
+    );
+}
+
+#[test]
+#[should_panic(expected = "treasury proposals require new_address")]
+fn test_gov_propose_treasury_without_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _) = setup_governance(&env);
+
+    let proposer = Address::generate(&env);
+    client.gov_propose(&proposer, &GovParameter::Treasury, &0, &None);
+}
+
+#[test]
+#[should_panic(expected = "new_value must be between 0 and 10000")]
+fn test_gov_propose_moderation_slash_bps_exceeds_max() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _) = setup_governance(&env);
+
+    let proposer = Address::generate(&env);
+    client.gov_propose(&proposer, &GovParameter::ModerationSlashBps, &10_001, &None);
 }

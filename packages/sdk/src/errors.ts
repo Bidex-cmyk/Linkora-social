@@ -117,6 +117,15 @@ export class SigningError extends LinkoraError {
 }
 
 /**
+ * Thrown when an HTTP request exceeds the configured timeout.
+ */
+export class TimeoutError extends LinkoraError {
+  constructor(message: string, details?: Record<string, unknown>, originalError?: unknown) {
+    super(message, "TIMEOUT", details, originalError);
+  }
+}
+
+/**
  * Thrown when an on-chain contract invocation fails (simulation error, contract
  * FAILED status, or a diagnostic trap returned by Soroban).
  */
@@ -237,6 +246,7 @@ function mapByRegex(msg: string, err: unknown): LinkoraError {
   return new LinkoraError(msg, "LINKORA_ERROR", undefined, err);
 }
 
+// TODO(#1043): Add instanceof SimulationError check before regex fallback
 export function mapError(err: unknown): LinkoraError {
   const codeMapped = tryMapByErrorCode(err);
   if (codeMapped) return codeMapped;

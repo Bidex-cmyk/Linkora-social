@@ -76,7 +76,104 @@ export class AuthService {
   }
 
   /**
-   * Verify the Stellar signature. Message is sha256(to + ":" + nonce + ":" + timestamp).
+   * Verify address ownership via a signed challenge.
+   *
+   * The challenge payload is `address:timestamp`, signed by the address's
+   * private key. Used to authenticate GET requests and WebSocket handshakes.
+   */
+  verifyAddressOwnership(address: string, timestamp: number, signatureHex: string): boolean {
+    if (!StrKey.isValidEd25519PublicKey(address)) {
+      throw new AuthError("Invalid address format");
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const skew = Math.abs(now - timestamp);
+    if (skew > this.maxTimestampSkew) {
+      throw new AuthError(
+        `Timestamp too old or too far in future. Skew: ${skew}s, max: ${this.maxTimestampSkew}s`
+      );
+    }
+
+    try {
+      const challenge = `${address}:${timestamp}`;
+      const hash = sha256(new TextEncoder().encode(challenge));
+
+      const signature = Buffer.from(signatureHex, "hex");
+      if (signature.length !== 64) {
+        throw new AuthError("Invalid signature length");
+      }
+
+      const keypair = Keypair.fromPublicKey(address);
+      const isValid = keypair.verify(Buffer.from(hash), signature);
+      if (!isValid) {
+        throw new AuthError("Invalid signature");
+      }
+      return true;
+    } catch (error) {
+      if (error instanceof AuthError) throw error;
+      throw new AuthError(`Address ownership verification failed: ${error}`);
+    }
+  }
+
+  /**
+   * Create an address ownership signature for testing.
+   * Signs sha256(address + ":" + timestamp).
+   */
+  static createAddressOwnershipSignature(
+    keypair: Keypair,
+    address: string,
+    timestamp: number
+  ): string {
+    const challenge = `${address}:${timestamp}`;
+    const hash = sha256(new TextEncoder().encode(challenge));
+    const signature = keypair.sign(Buffer.from(hash));
+    return Buffer.from(signature).toString("hex");
+  }
+
+  /**
+   * Parse an Authorization header value in the format:
+   *   Stellar <address> <signature> <timestamp>
+   *
+   * Returns the parsed components or throws an AuthError.
+   */
+  static parseAuthHeader(header: string | undefined): {
+    address: string;
+    signature: string;
+    timestamp: number;
+  } {
+    if (!header) {
+      throw new AuthError("Missing Authorization header");
+    }
+
+    const parts = header.split(" ");
+    if (parts.length !== 4 || parts[0] !== "Stellar") {
+      throw new AuthError(
+        "Invalid Authorization header format. Expected: Stellar <address> <signature> <timestamp>"
+      );
+    }
+
+    const [, address, signature, timestampStr] = parts;
+    const timestamp = parseInt(timestampStr, 10);
+
+    if (isNaN(timestamp)) {
+      throw new AuthError("Invalid timestamp in Authorization header");
+    }
+
+    return { address, signature, timestamp };
+  }
+
+  /**
+   * Create a signed Authorization header value for testing.
+   */
+  static createAuthHeader(keypair: Keypair): string {
+    const address = keypair.publicKey();
+    const timestamp = Math.floor(Date.now() / 1000);
+    const signature = AuthService.createAddressOwnershipSignature(keypair, address, timestamp);
+    return `Stellar ${address} ${signature} ${timestamp}`;
+  }
+
+  /**
+   * Create the Stellar signature. Message is sha256(to + ":" + nonce + ":" + timestamp).
    */
   private verifySignature(
     sender: string,

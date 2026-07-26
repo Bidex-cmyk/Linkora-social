@@ -35,6 +35,15 @@ export interface BackfillHealthCheck {
   consecutiveFailures: number;
 }
 
+export interface PoolHealthCheck {
+  /** Total clients currently held by the pool (idle + in use). */
+  totalCount: number;
+  /** Clients not currently checked out. */
+  idleCount: number;
+  /** Queries waiting on a client because the pool is saturated. */
+  waitingCount: number;
+}
+
 export interface ReadinessResult {
   ready: boolean;
   checks: {
@@ -42,6 +51,7 @@ export interface ReadinessResult {
     stellar_rpc: DependencyCheck;
     event_stream: EventStreamCheck;
     backfill: BackfillHealthCheck;
+    pool: PoolHealthCheck;
   };
 }
 
@@ -122,6 +132,14 @@ export class HealthMonitor {
     return { status: "connected", lastEventAgo: `${secondsAgo}s` };
   }
 
+  private checkPool(): PoolHealthCheck {
+    return {
+      totalCount: this.db.totalCount,
+      idleCount: this.db.idleCount,
+      waitingCount: this.db.waitingCount,
+    };
+  }
+
   private checkBackfill(): BackfillHealthCheck {
     if (!this.backfillCoordinator) {
       return {
@@ -156,6 +174,7 @@ export class HealthMonitor {
             totalLedgers: 0,
             consecutiveFailures: 0,
           },
+          pool: this.checkPool(),
         },
       };
     }
@@ -166,6 +185,7 @@ export class HealthMonitor {
     ]);
     const event_stream = this.checkEventStream();
     const backfill = this.checkBackfill();
+    const pool = this.checkPool();
 
     // Not ready if circuit breaker is open or gap is too large.
     const backfillHealthy =
@@ -173,6 +193,6 @@ export class HealthMonitor {
     const ready =
       database.status === "up" && stellar_rpc.status === "up" && backfillHealthy;
 
-    return { ready, checks: { database, stellar_rpc, event_stream, backfill } };
+    return { ready, checks: { database, stellar_rpc, event_stream, backfill, pool } };
   }
 }

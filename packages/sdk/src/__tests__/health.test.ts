@@ -182,6 +182,79 @@ describe("ConnectionHealthMonitor", () => {
     });
   });
 
+  describe("destroy()", () => {
+    it("stops all checks and clears listeners", async () => {
+      mockGetLatestLedger.mockResolvedValue({ sequence: 1 });
+      const monitor = new ConnectionHealthMonitor("https://rpc.example.com", { intervalMs: 20 });
+      const cb1 = jest.fn();
+      const cb2 = jest.fn();
+      monitor.onConnectionStatusChange(cb1);
+      monitor.onConnectionStatusChange(cb2);
+
+      await waitFor(() => cb1.mock.calls.length > 0);
+
+      monitor.destroy();
+
+      const callsBefore1 = cb1.mock.calls.length;
+      const callsBefore2 = cb2.mock.calls.length;
+      await new Promise((r) => setTimeout(r, 60));
+
+      expect(cb1.mock.calls.length).toBe(callsBefore1);
+      expect(cb2.mock.calls.length).toBe(callsBefore2);
+    });
+
+    it("resets internal state on destroy", async () => {
+      mockGetLatestLedger.mockResolvedValue({ sequence: 1 });
+      const monitor = new ConnectionHealthMonitor("https://rpc.example.com", { intervalMs: 20 });
+      monitor.recordRetry({
+        attempt: 1,
+        maxAttempts: 5,
+        delayMs: 100,
+        reason: "error",
+        error: new Error("test"),
+      });
+
+      monitor.destroy();
+
+      const metrics = monitor.getRetryMetrics();
+      expect(metrics.totalRetries).toBe(0);
+      expect(metrics.healthy).toBe(true);
+    });
+
+    it("allows restart after destroy", async () => {
+      mockGetLatestLedger.mockResolvedValue({ sequence: 1 });
+      const monitor = new ConnectionHealthMonitor("https://rpc.example.com", { intervalMs: 20 });
+      const cb = jest.fn();
+      monitor.onConnectionStatusChange(cb);
+
+      await waitFor(() => cb.mock.calls.length > 0);
+      monitor.destroy();
+
+      jest.clearAllMocks();
+      cb.mockClear();
+
+      monitor.onConnectionStatusChange(cb);
+      await waitFor(() => cb.mock.calls.length > 0);
+      expect(cb).toHaveBeenCalledWith("connected");
+
+      monitor.stop();
+    });
+
+    it("guards against double-start by clearing existing interval", async () => {
+      mockGetLatestLedger.mockResolvedValue({ sequence: 1 });
+      const monitor = new ConnectionHealthMonitor("https://rpc.example.com", { intervalMs: 50 });
+      monitor.start();
+      monitor.start();
+
+      await new Promise((r) => setTimeout(r, 80));
+      const callCount = mockGetLatestLedger.mock.calls.length;
+
+      monitor.stop();
+      // If double-start created duplicate intervals, we'd see more calls
+      expect(callCount).toBeLessThan(5);
+    });
+  });
+
   describe("LinkoraClient integration", () => {
     let LinkoraClient: typeof import("../client").LinkoraClient;
     beforeAll(async () => {

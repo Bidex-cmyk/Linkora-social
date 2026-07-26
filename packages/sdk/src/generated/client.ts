@@ -12,7 +12,7 @@ import {
   Account,
   Keypair,
 } from "@stellar/stellar-base";
-import { NotFoundError, mapError } from "../errors";
+import { NotFoundError, mapError } from "../errors.js";
 import type {
   Pool,
   Post,
@@ -24,7 +24,7 @@ import type {
   StorageKey,
   GovParameter,
   ProposalStatus,
-} from "./types";
+} from "./types.js";
 
 const { isSimulationError, isSimulationSuccess } = rpc.Api;
 

@@ -3,7 +3,7 @@
 
 import * as rpc from "@stellar/stellar-sdk/rpc";
 import { scValToNative, xdr } from "@stellar/stellar-base";
-import type { GovParameter } from "./types";
+import type { GovParameter } from "./types.js";
 
 // ── Event type definitions ───────────────────────────────────────────
 

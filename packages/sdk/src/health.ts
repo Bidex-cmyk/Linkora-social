@@ -1,5 +1,6 @@
 import * as rpc from "@stellar/stellar-sdk/rpc";
-import type { RetryAttemptInfo, RetryReason } from "./utils/retry";
+import type { RetryAttemptInfo, RetryReason } from "./utils/retry.js";
+import { TimeoutError } from "./errors.js";
 
 export type ConnectionStatus = "connected" | "disconnected";
 export type ConnectionStatusCallback = (status: ConnectionStatus) => void;
@@ -41,6 +42,8 @@ export interface HealthCheckConfig {
   backoffMs?: number;
   /** Maximum backoff cap in ms. Default: 30000 */
   maxBackoffMs?: number;
+  /** Timeout in ms for individual health check pings. Default: 10000 */
+  pingTimeoutMs?: number;
 }
 
 /**
@@ -52,6 +55,7 @@ export class ConnectionHealthMonitor {
   private readonly intervalMs: number;
   private readonly backoffMs: number;
   private readonly maxBackoffMs: number;
+  private readonly pingTimeoutMs: number;
 
   private status: ConnectionStatus = "disconnected";
   private listeners: ConnectionStatusCallback[] = [];
@@ -64,6 +68,7 @@ export class ConnectionHealthMonitor {
     this.intervalMs = config.intervalMs ?? 30_000;
     this.backoffMs = config.backoffMs ?? 1_000;
     this.maxBackoffMs = config.maxBackoffMs ?? 30_000;
+    this.pingTimeoutMs = config.pingTimeoutMs ?? 10_000;
   }
 
   /** Register a callback invoked whenever connection status changes. Starts the loop if not already running. */
@@ -76,8 +81,12 @@ export class ConnectionHealthMonitor {
   async healthCheck(): Promise<boolean> {
     try {
       const server = new rpc.Server(this.rpcUrl);
-      await server.getLatestLedger();
-      return true;
+      const result = await withTimeout(
+        server.getLatestLedger(),
+        this.pingTimeoutMs,
+        `Health check timed out after ${this.pingTimeoutMs}ms`
+      );
+      return result !== null;
     } catch {
       return false;
     }
@@ -97,6 +106,15 @@ export class ConnectionHealthMonitor {
       clearTimeout(this.timer);
       this.timer = null;
     }
+  }
+
+  /** Destroy the monitor, stop all checks, clear listeners, and reset state. */
+  destroy(): void {
+    this.stop();
+    this.listeners = [];
+    this.status = "disconnected";
+    this.retryMetrics = emptyRetryMetrics();
+    this._currentBackoff = 0;
   }
 
   private scheduleCheck(delayMs: number): void {
@@ -175,4 +193,14 @@ export class ConnectionHealthMonitor {
     }
     return this._currentBackoff;
   }
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new TimeoutError(message, { timeoutMs: ms })), ms);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); }
+    );
+  });
 }
