@@ -12,7 +12,11 @@ use soroban_sdk::{vec, BytesN, Env, Vec};
 fn test_fuzz_property_valid_proof_verifies() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
+    let (client, admin, _) = setup_contract(&env);
+
+    let signing_key = credential_authority_signing_key(1);
+    let pubkey = credential_authority_pubkey(&env, &signing_key);
+    client.set_credential_authority(&admin, &pubkey);
 
     let user = <soroban_sdk::Address as soroban_sdk::testutils::Address>::generate(&env);
 
@@ -22,11 +26,12 @@ fn test_fuzz_property_valid_proof_verifies() {
         let leaf = BytesN::from_array(&env, &[i; 32]);
         let root = leaf.clone();
         let proof: Vec<BytesN<32>> = vec![&env];
+        let signature = sign_credential_root(&env, &signing_key, &root);
 
-        client.update_credential_root(&user, &root);
+        client.update_credential_root(&user, &root, &signature);
 
         let nullifier = BytesN::from_array(&env, &[i + 100; 32]);
-        let result = client.verify_credential(&user, &leaf, &proof, &nullifier);
+        let result = client.verify_credential(&user, &proof, &leaf, &nullifier);
 
         assert!(result, "valid proof should verify for leaf value {}", i);
     }
@@ -36,20 +41,25 @@ fn test_fuzz_property_valid_proof_verifies() {
 fn test_fuzz_property_wrong_leaf_fails() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
+    let (client, admin, _) = setup_contract(&env);
+
+    let signing_key = credential_authority_signing_key(1);
+    let pubkey = credential_authority_pubkey(&env, &signing_key);
+    client.set_credential_authority(&admin, &pubkey);
 
     let user = <soroban_sdk::Address as soroban_sdk::testutils::Address>::generate(&env);
 
     // Property: For any root, a proof with a different leaf should fail
     let root = BytesN::from_array(&env, &[1u8; 32]);
-    client.update_credential_root(&user, &root);
+    let signature = sign_credential_root(&env, &signing_key, &root);
+    client.update_credential_root(&user, &root, &signature);
 
     for i in 2..=10u8 {
         let wrong_leaf = BytesN::from_array(&env, &[i; 32]);
         let proof: Vec<BytesN<32>> = vec![&env];
         let nullifier = BytesN::from_array(&env, &[i + 100; 32]);
 
-        let result = client.verify_credential(&user, &wrong_leaf, &proof, &nullifier);
+        let result = client.verify_credential(&user, &proof, &wrong_leaf, &nullifier);
 
         assert!(!result, "wrong leaf should fail for value {}", i);
     }
@@ -59,7 +69,11 @@ fn test_fuzz_property_wrong_leaf_fails() {
 fn test_fuzz_property_merkle_root_computation() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
+    let (client, admin, _) = setup_contract(&env);
+
+    let signing_key = credential_authority_signing_key(1);
+    let pubkey = credential_authority_pubkey(&env, &signing_key);
+    client.set_credential_authority(&admin, &pubkey);
 
     let user = <soroban_sdk::Address as soroban_sdk::testutils::Address>::generate(&env);
 
@@ -69,21 +83,20 @@ fn test_fuzz_property_merkle_root_computation() {
     let sibling = BytesN::from_array(&env, &[2u8; 32]);
     let proof = vec![&env, sibling.clone()];
 
-    // Compute expected root using position-dependent hash
-    let mut result = [0u8; 32];
-    let leaf_arr = leaf.to_array();
-    let sibling_arr = sibling.to_array();
-    for i in 0..32 {
-        result[i] = leaf_arr[i].wrapping_add(sibling_arr[i]).wrapping_add(0u8);
-    }
-    let expected_root = BytesN::from_array(&env, &result);
+    // Mirror the contract's `hash_ordered_pair`: sha256 of the two 32-byte
+    // values concatenated in ascending byte order (leaf < sibling here).
+    let mut data = soroban_sdk::Bytes::new(&env);
+    data.append(&leaf.to_bytes());
+    data.append(&sibling.to_bytes());
+    let expected_root: BytesN<32> = env.crypto().sha256(&data).into();
+    let signature = sign_credential_root(&env, &signing_key, &expected_root);
 
-    client.update_credential_root(&user, &expected_root);
+    client.update_credential_root(&user, &expected_root, &signature);
 
     // Verify multiple times - should always succeed
     for i in 1..=5u8 {
         let nullifier = BytesN::from_array(&env, &[i + 100; 32]);
-        let result = client.verify_credential(&user, &leaf, &proof, &nullifier);
+        let result = client.verify_credential(&user, &proof, &leaf, &nullifier);
         assert!(
             result,
             "deterministic verification should succeed on iteration {}",
@@ -96,7 +109,11 @@ fn test_fuzz_property_merkle_root_computation() {
 fn test_fuzz_property_nullifier_uniqueness_across_users() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
+    let (client, admin, _) = setup_contract(&env);
+
+    let signing_key = credential_authority_signing_key(1);
+    let pubkey = credential_authority_pubkey(&env, &signing_key);
+    client.set_credential_authority(&admin, &pubkey);
 
     // Property: The same nullifier can be used by different users
     let user1 = <soroban_sdk::Address as soroban_sdk::testutils::Address>::generate(&env);
@@ -107,22 +124,27 @@ fn test_fuzz_property_nullifier_uniqueness_across_users() {
     let root = leaf.clone();
     let proof: Vec<BytesN<32>> = vec![&env];
     let nullifier = BytesN::from_array(&env, &[10u8; 32]);
+    let signature = sign_credential_root(&env, &signing_key, &root);
 
-    client.update_credential_root(&user1, &root);
-    client.update_credential_root(&user2, &root);
-    client.update_credential_root(&user3, &root);
+    client.update_credential_root(&user1, &root, &signature);
+    client.update_credential_root(&user2, &root, &signature);
+    client.update_credential_root(&user3, &root, &signature);
 
     // Same nullifier should work for all different users
-    assert!(client.verify_credential(&user1, &leaf, &proof, &nullifier));
-    assert!(client.verify_credential(&user2, &leaf, &proof, &nullifier));
-    assert!(client.verify_credential(&user3, &leaf, &proof, &nullifier));
+    assert!(client.verify_credential(&user1, &proof, &leaf, &nullifier));
+    assert!(client.verify_credential(&user2, &proof, &leaf, &nullifier));
+    assert!(client.verify_credential(&user3, &proof, &leaf, &nullifier));
 }
 
 #[test]
 fn test_fuzz_property_multiple_proofs_same_root() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
+    let (client, admin, _) = setup_contract(&env);
+
+    let signing_key = credential_authority_signing_key(1);
+    let pubkey = credential_authority_pubkey(&env, &signing_key);
+    client.set_credential_authority(&admin, &pubkey);
 
     let user = <soroban_sdk::Address as soroban_sdk::testutils::Address>::generate(&env);
 
@@ -134,13 +156,14 @@ fn test_fuzz_property_multiple_proofs_same_root() {
     let leaf = BytesN::from_array(&env, &[1u8; 32]);
     let root = leaf.clone();
     let proof: Vec<BytesN<32>> = vec![&env];
+    let signature = sign_credential_root(&env, &signing_key, &root);
 
-    client.update_credential_root(&user, &root);
+    client.update_credential_root(&user, &root, &signature);
 
     // Verify the same proof multiple times with different nullifiers
     for i in 1..=10u8 {
         let nullifier = BytesN::from_array(&env, &[i; 32]);
-        let result = client.verify_credential(&user, &leaf, &proof, &nullifier);
+        let result = client.verify_credential(&user, &proof, &leaf, &nullifier);
         assert!(
             result,
             "same proof should verify with different nullifier {}",
