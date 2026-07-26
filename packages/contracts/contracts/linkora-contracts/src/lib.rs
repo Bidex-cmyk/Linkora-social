@@ -14,10 +14,9 @@ mod validation;
 
 pub use errors::{ContractError, RentError};
 use validation::{
-    validate_address_list, validate_amount, validate_bio, validate_content, validate_gov_parameter,
-    validate_non_default_address, validate_protocol_fee, validate_report_verdict,
-    validate_signature, validate_u32_range, validate_username, MAX_BIO_LEN, MAX_CONTENT_LEN,
-    MAX_FEE_BPS, MAX_QUORUM,
+    validate_address_list, validate_amount, validate_gov_parameter, validate_non_default_address,
+    validate_protocol_fee, validate_report_verdict, validate_signature, validate_u32_range,
+    validate_username, MAX_BIO_LEN, MAX_CONTENT_LEN, MAX_FEE_BPS, MAX_QUORUM,
 };
 
 // ── Storage Key Enum ──────────────────────────────────────────────────────────
@@ -2373,7 +2372,6 @@ impl LinkoraContract {
             signer.require_auth();
         }
 
-        let initial_len = pool.admins.len();
         let mut remove_idx: Option<u32> = None;
         for (i, existing_admin) in pool.admins.iter().enumerate() {
             if existing_admin == admin {
@@ -3608,33 +3606,6 @@ impl LinkoraContract {
             Self::bump(&env, &key);
         }
         result
-    }
-
-    /// Computes the Merkle root from a leaf and proof path.
-    /// This is a helper function for verify_credential.
-    /// Uses a position-dependent hash to ensure proof order matters.
-    #[allow(clippy::needless_borrow)]
-    fn compute_merkle_root(leaf: &BytesN<32>, proof: &Vec<BytesN<32>>) -> BytesN<32> {
-        let env = leaf.env();
-        let mut current = leaf.clone();
-        let mut index = 0u8;
-
-        for sibling in proof.iter() {
-            // Position-dependent hash: add current, sibling, and index
-            // This ensures (a, b) at position 0 != (b, a) at position 0
-            let mut result = [0u8; 32];
-            let current_arr = current.to_array();
-            let sibling_arr = sibling.to_array();
-            for i in 0..32 {
-                result[i] = current_arr[i]
-                    .wrapping_add(sibling_arr[i])
-                    .wrapping_add(index);
-            }
-            current = BytesN::from_array(&env, &result);
-            index = index.wrapping_add(1);
-        }
-
-        current
     }
 
     // ── Internal Helpers ──────────────────────────────────────────────────────

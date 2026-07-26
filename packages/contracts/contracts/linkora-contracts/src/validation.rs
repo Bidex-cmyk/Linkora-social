@@ -90,11 +90,11 @@ pub fn validate_username(env: &Env, username: &String) {
     // Check for alphanumeric, underscore, and hyphen only
     let username_bytes = username.to_bytes();
     for byte in username_bytes.iter() {
-        let is_valid = (byte >= b'a' && byte <= b'z') // a-z
-            || (byte >= b'A' && byte <= b'Z') // A-Z
-            || (byte >= b'0' && byte <= b'9') // 0-9
-            || byte == b'_' // underscore
-            || byte == b'-'; // hyphen
+        let is_valid = byte.is_ascii_lowercase()
+            || byte.is_ascii_uppercase()
+            || byte.is_ascii_digit()
+            || byte == b'_'
+            || byte == b'-';
 
         require_with_error!(
             env,
@@ -135,18 +135,6 @@ pub fn validate_username(env: &Env, username: &String) {
             format!("username '{reserved}' is reserved and cannot be used")
         );
     }
-}
-
-pub fn validate_content(env: &Env, content: &String) {
-    // Ensure content is not empty
-    require_with_error!(env, !content.is_empty(), "content cannot be empty");
-
-    // Validate against configurable content limit
-    validate_string_max_len(env, "content", content, MAX_CONTENT_LEN);
-}
-
-pub fn validate_bio(env: &Env, bio: &String) {
-    validate_string_max_len(env, "bio", bio, MAX_BIO_LEN);
 }
 
 pub fn validate_amount(env: &Env, label: &str, amount: i128) {

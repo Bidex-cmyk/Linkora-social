@@ -475,7 +475,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     return readyBuilder.build() as Transaction;
   }
 
-// TODO(#1044): Add pagination support (cursor, limit params) to event fetching methods
+  // TODO(#1044): Add pagination support (cursor, limit params) to event fetching methods
   // ── Override read methods with error handling ─────────────────────────────
 
   /**
@@ -724,7 +724,11 @@ export class LinkoraClient extends GeneratedLinkoraClient {
         ? "https://horizon-testnet.stellar.org"
         : "https://horizon.stellar.org");
 
-    const res = await fetchWithTimeout(`${horizon}/accounts/${userAddress}`, undefined, this._timeoutMs);
+    const res = await fetchWithTimeout(
+      `${horizon}/accounts/${userAddress}`,
+      undefined,
+      this._timeoutMs
+    );
     if (!res.ok) {
       throw new NetworkError(
         `Could not fetch account from Horizon (HTTP ${res.status}). ` +
@@ -1313,24 +1317,20 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     reportCbor: Uint8Array,
     signature: Uint8Array,
     creator: string,
-    windowStart: number,
-    windowEnd: number,
-    sourceAccount: Account
+    windowStart: number | bigint,
+    windowEnd: number | bigint
   ): string {
     ensureNonEmptyString(oracleName, "oracleName");
     ensureAddress(creator, "creator");
     ensureInteger(windowStart, "windowStart", 0);
     ensureInteger(windowEnd, "windowEnd", 0);
-    return this.buildTxForSubmit(
-      this._contractId,
-      sourceAccount,
-      "verify_analytics_attestation",
-      nativeToScVal(oracleName, { type: "symbol" }),
-      nativeToScVal(Buffer.from(reportCbor), { type: "bytes" }),
-      nativeToScVal(Buffer.from(signature), { type: "bytes" }),
-      scvAddress(creator),
-      nativeToScVal(windowStart, { type: "u64" }),
-      nativeToScVal(windowEnd, { type: "u64" })
+    return super.verifyAnalyticsAttestation(
+      oracleName,
+      reportCbor,
+      signature,
+      creator,
+      windowStart,
+      windowEnd
     );
   }
 
@@ -1406,7 +1406,10 @@ export class LinkoraClient extends GeneratedLinkoraClient {
    * console.log("Deploy Op:", deployOp, "Profile Op:", profileOp);
    * ```
    */
-  setProfileWithNewToken(params: SetProfileWithNewTokenParams, sourceAccount: Account): [string, string] {
+  setProfileWithNewToken(
+    params: SetProfileWithNewTokenParams,
+    sourceAccount: Account
+  ): [string, string] {
     if (!this.tokenFactoryId) {
       throw new ValidationError(
         "tokenFactoryId must be set in ClientConfig to use setProfileWithNewToken",
@@ -1415,10 +1418,13 @@ export class LinkoraClient extends GeneratedLinkoraClient {
         }
       );
     }
-    const deployTx = this.deployCreatorToken({
-      deployer: params.user,
-      ...params.tokenParams,
-    }, sourceAccount);
+    const deployTx = this.deployCreatorToken(
+      {
+        deployer: params.user,
+        ...params.tokenParams,
+      },
+      sourceAccount
+    );
     // NOTE: the token address used here is a placeholder; callers should
     // first simulate deployCreatorToken to get the real token address, then
     // call setProfile(user, username, tokenAddress) directly.

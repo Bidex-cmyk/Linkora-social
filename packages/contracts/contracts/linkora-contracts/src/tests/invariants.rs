@@ -1,10 +1,10 @@
 #![cfg(test)]
 
-use crate::*;
-use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    vec, Address, BytesN, Env, String, Vec,
+use crate::test::{
+    credential_authority_pubkey, credential_authority_signing_key, sign_credential_root,
 };
+use crate::*;
+use soroban_sdk::{testutils::Address as _, vec, Address, BytesN, Env, String, Vec};
 
 /// Credential subsystem invariant tests
 /// These tests verify that the credential subsystem maintains
@@ -14,12 +14,18 @@ use soroban_sdk::{
 fn test_invariant_credential_root_persistence() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
+    let (client, admin, _) = setup_test_env(&env);
+    let signing_key = credential_authority_signing_key(1);
+    client.set_credential_authority(&admin, &credential_authority_pubkey(&env, &signing_key));
 
     let user = <soroban_sdk::Address as soroban_sdk::testutils::Address>::generate(&env);
     let root = BytesN::from_array(&env, &[1u8; 32]);
 
-    client.update_credential_root(&user, &root);
+    client.update_credential_root(
+        &user,
+        &root,
+        &sign_credential_root(&env, &signing_key, &root),
+    );
 
     // Invariant: Once set, the root should persist across multiple reads
     assert_eq!(client.get_credential_root(&user).unwrap(), root);
@@ -28,38 +34,45 @@ fn test_invariant_credential_root_persistence() {
 }
 
 #[test]
-#[should_panic(expected = "nullifier already used")]
 fn test_invariant_nullifier_uniqueness() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
+    let (client, admin, _) = setup_test_env(&env);
+    let signing_key = credential_authority_signing_key(1);
+    client.set_credential_authority(&admin, &credential_authority_pubkey(&env, &signing_key));
 
     let user = <soroban_sdk::Address as soroban_sdk::testutils::Address>::generate(&env);
     let leaf = BytesN::from_array(&env, &[1u8; 32]);
     let root = leaf.clone();
     let proof: Vec<BytesN<32>> = vec![&env];
 
-    client.update_credential_root(&user, &root);
+    client.update_credential_root(
+        &user,
+        &root,
+        &sign_credential_root(&env, &signing_key, &root),
+    );
 
     // Invariant: Each nullifier can only be used once
     let nullifier1 = BytesN::from_array(&env, &[10u8; 32]);
     let nullifier2 = BytesN::from_array(&env, &[20u8; 32]);
     let nullifier3 = BytesN::from_array(&env, &[30u8; 32]);
 
-    assert!(client.verify_credential(&user, &leaf, &proof, &nullifier1));
-    assert!(client.verify_credential(&user, &leaf, &proof, &nullifier2));
-    assert!(client.verify_credential(&user, &leaf, &proof, &nullifier3));
+    assert!(client.verify_credential(&user, &proof, &leaf, &nullifier1));
+    assert!(client.verify_credential(&user, &proof, &leaf, &nullifier2));
+    assert!(client.verify_credential(&user, &proof, &leaf, &nullifier3));
 
-    // Reusing any nullifier should panic
-    client.verify_credential(&user, &leaf, &proof, &nullifier1);
+    // Reusing any nullifier returns false rather than panicking.
+    let reused = client.verify_credential(&user, &proof, &leaf, &nullifier1);
+    assert!(!reused, "reused nullifier should return false");
 }
 
 #[test]
-#[should_panic(expected = "nullifier already used")]
 fn test_invariant_nullifier_replay_panics() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
+    let (client, admin, _) = setup_test_env(&env);
+    let signing_key = credential_authority_signing_key(1);
+    client.set_credential_authority(&admin, &credential_authority_pubkey(&env, &signing_key));
 
     let user = <soroban_sdk::Address as soroban_sdk::testutils::Address>::generate(&env);
     let leaf = BytesN::from_array(&env, &[1u8; 32]);
@@ -67,20 +80,27 @@ fn test_invariant_nullifier_replay_panics() {
     let proof: Vec<BytesN<32>> = vec![&env];
     let nullifier = BytesN::from_array(&env, &[10u8; 32]);
 
-    client.update_credential_root(&user, &root);
+    client.update_credential_root(
+        &user,
+        &root,
+        &sign_credential_root(&env, &signing_key, &root),
+    );
 
     // First verification should succeed
-    assert!(client.verify_credential(&user, &leaf, &proof, &nullifier));
+    assert!(client.verify_credential(&user, &proof, &leaf, &nullifier));
 
-    // Second verification with same nullifier should panic
-    client.verify_credential(&user, &leaf, &proof, &nullifier);
+    // Second verification with the same nullifier returns false rather than panicking.
+    let replayed = client.verify_credential(&user, &proof, &leaf, &nullifier);
+    assert!(!replayed, "replayed nullifier should return false");
 }
 
 #[test]
 fn test_invariant_user_root_isolation() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
+    let (client, admin, _) = setup_test_env(&env);
+    let signing_key = credential_authority_signing_key(1);
+    client.set_credential_authority(&admin, &credential_authority_pubkey(&env, &signing_key));
 
     let user1 = <soroban_sdk::Address as soroban_sdk::testutils::Address>::generate(&env);
     let user2 = <soroban_sdk::Address as soroban_sdk::testutils::Address>::generate(&env);
@@ -90,9 +110,21 @@ fn test_invariant_user_root_isolation() {
     let root2 = BytesN::from_array(&env, &[2u8; 32]);
     let root3 = BytesN::from_array(&env, &[3u8; 32]);
 
-    client.update_credential_root(&user1, &root1);
-    client.update_credential_root(&user2, &root2);
-    client.update_credential_root(&user3, &root3);
+    client.update_credential_root(
+        &user1,
+        &root1,
+        &sign_credential_root(&env, &signing_key, &root1),
+    );
+    client.update_credential_root(
+        &user2,
+        &root2,
+        &sign_credential_root(&env, &signing_key, &root2),
+    );
+    client.update_credential_root(
+        &user3,
+        &root3,
+        &sign_credential_root(&env, &signing_key, &root3),
+    );
 
     // Invariant: Each user's root is independent
     assert_eq!(client.get_credential_root(&user1).unwrap(), root1);
@@ -101,7 +133,11 @@ fn test_invariant_user_root_isolation() {
 
     // Updating one user should not affect others
     let new_root1 = BytesN::from_array(&env, &[99u8; 32]);
-    client.update_credential_root(&user1, &new_root1);
+    client.update_credential_root(
+        &user1,
+        &new_root1,
+        &sign_credential_root(&env, &signing_key, &new_root1),
+    );
 
     assert_eq!(client.get_credential_root(&user1).unwrap(), new_root1);
     assert_eq!(client.get_credential_root(&user2).unwrap(), root2);
@@ -109,26 +145,28 @@ fn test_invariant_user_root_isolation() {
 }
 
 #[test]
-#[should_panic(expected = "no credential root set")]
 fn test_invariant_verification_requires_root() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
+    let (client, _, _) = setup_test_env(&env);
 
     let user = <soroban_sdk::Address as soroban_sdk::testutils::Address>::generate(&env);
     let leaf = BytesN::from_array(&env, &[1u8; 32]);
     let proof: Vec<BytesN<32>> = vec![&env];
     let nullifier = BytesN::from_array(&env, &[10u8; 32]);
 
-    // Invariant: Verification must fail without a root set
-    client.verify_credential(&user, &leaf, &proof, &nullifier);
+    // Invariant: Verification must return false without a root set
+    let result = client.verify_credential(&user, &proof, &leaf, &nullifier);
+    assert!(!result, "verification without a root should return false");
 }
 
 #[test]
 fn test_invariant_invalid_proof_does_not_consume_nullifier() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
+    let (client, admin, _) = setup_test_env(&env);
+    let signing_key = credential_authority_signing_key(1);
+    client.set_credential_authority(&admin, &credential_authority_pubkey(&env, &signing_key));
 
     let user = <soroban_sdk::Address as soroban_sdk::testutils::Address>::generate(&env);
     let root = BytesN::from_array(&env, &[1u8; 32]);
@@ -136,28 +174,38 @@ fn test_invariant_invalid_proof_does_not_consume_nullifier() {
     let proof: Vec<BytesN<32>> = vec![&env];
     let nullifier = BytesN::from_array(&env, &[10u8; 32]);
 
-    client.update_credential_root(&user, &root);
+    client.update_credential_root(
+        &user,
+        &root,
+        &sign_credential_root(&env, &signing_key, &root),
+    );
 
     // Invariant: Failed verification should not consume the nullifier
-    assert!(!client.verify_credential(&user, &wrong_leaf, &proof, &nullifier));
+    assert!(!client.verify_credential(&user, &proof, &wrong_leaf, &nullifier));
 
     // Same nullifier should still work for a valid proof
     let valid_leaf = root.clone();
-    assert!(client.verify_credential(&user, &valid_leaf, &proof, &nullifier));
+    assert!(client.verify_credential(&user, &proof, &valid_leaf, &nullifier));
 }
 
 #[test]
 fn test_invariant_root_size_fixed() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
+    let (client, admin, _) = setup_test_env(&env);
+    let signing_key = credential_authority_signing_key(1);
+    client.set_credential_authority(&admin, &credential_authority_pubkey(&env, &signing_key));
 
     let user = <soroban_sdk::Address as soroban_sdk::testutils::Address>::generate(&env);
 
     // Invariant: Root must be exactly 32 bytes
     // This is enforced by the type system (BytesN<32>)
     let root = BytesN::from_array(&env, &[1u8; 32]);
-    client.update_credential_root(&user, &root);
+    client.update_credential_root(
+        &user,
+        &root,
+        &sign_credential_root(&env, &signing_key, &root),
+    );
 
     let retrieved = client.get_credential_root(&user).unwrap();
     assert_eq!(retrieved.to_array().len(), 32);
@@ -225,7 +273,7 @@ fn invariant_no_orphaned_likes_after_post_deletion_with_multiple_likers() {
 fn invariant_no_orphaned_reports_after_post_deletion() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, admin, _) = setup_test_env(&env);
+    let (client, _admin, _) = setup_test_env(&env);
 
     let author = Address::generate(&env);
     setup_profile(&client, &author, "author");
