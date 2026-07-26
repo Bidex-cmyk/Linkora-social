@@ -129,3 +129,65 @@ describe('AuthService.verifyMessageAuth', () => {
     expect(() => service.verifyMessageAuth(auth)).toThrow(AuthError);
   });
 });
+
+describe('AuthService WebSocket challenge', () => {
+  const service = new AuthService(30);
+  const kp = makeKeypair();
+  const address = kp.publicKey();
+
+  function signChallenge(challenge: string, keypair: Keypair): string {
+    const { sha256 } = require('@noble/hashes/sha256');
+    const hash = sha256(new TextEncoder().encode(challenge));
+    const sig = keypair.sign(Buffer.from(hash));
+    return Buffer.from(sig).toString('hex');
+  }
+
+  it('creates a valid challenge', () => {
+    const { challenge, timestamp } = service.createWsChallenge(address);
+    expect(challenge).toMatch(/^ws_challenge:[A-Z0-9]+:[0-9a-f-]+:\d+$/);
+    expect(challenge).toContain(address);
+    expect(timestamp).toBeGreaterThan(0);
+  });
+
+  it('accepts a valid challenge-response', () => {
+    const { challenge, timestamp } = service.createWsChallenge(address);
+    const signature = signChallenge(challenge, kp);
+    expect(() => service.verifyWsChallenge(address, challenge, timestamp, signature)).not.toThrow();
+  });
+
+  it('rejects signature from wrong keypair', () => {
+    const { challenge, timestamp } = service.createWsChallenge(address);
+    const imposter = makeKeypair();
+    const signature = signChallenge(challenge, imposter);
+    expect(() => service.verifyWsChallenge(address, challenge, timestamp, signature)).toThrow(AuthError);
+  });
+
+  it('rejects tampered challenge', () => {
+    const { challenge, timestamp } = service.createWsChallenge(address);
+    const signature = signChallenge(challenge, kp);
+    expect(() => service.verifyWsChallenge(address, challenge + 'X', timestamp, signature)).toThrow(AuthError);
+  });
+
+  it('rejects expired timestamp', () => {
+    const { challenge } = service.createWsChallenge(address);
+    const signature = signChallenge(challenge, kp);
+    const oldTimestamp = nowSec() - 60;
+    expect(() => service.verifyWsChallenge(address, challenge, oldTimestamp, signature)).toThrow(AuthError);
+  });
+
+  it('rejects invalid address format', () => {
+    expect(() => service.createWsChallenge('NOT_A_KEY')).toThrow(AuthError);
+  });
+
+  it('rejects invalid challenge format', () => {
+    const { timestamp } = service.createWsChallenge(address);
+    const fakeChallenge = `ws_challenge:${address}:fake:nonce:${timestamp}`;
+    const signature = signChallenge(fakeChallenge, kp);
+    expect(() => service.verifyWsChallenge(address, fakeChallenge, timestamp, signature)).toThrow(AuthError);
+  });
+
+  it('rejects short signature', () => {
+    const { challenge, timestamp } = service.createWsChallenge(address);
+    expect(() => service.verifyWsChallenge(address, challenge, timestamp, 'deadbeef')).toThrow(AuthError);
+  });
+});

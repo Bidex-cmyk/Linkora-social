@@ -681,6 +681,17 @@ where
 impl LinkoraContract {
     // ── Initialization ────────────────────────────────────────────────────────
 
+    /// Initializes the contract with an admin, treasury address, and protocol fee.
+    ///
+    /// # Arguments
+    /// * `admin` - Contract administrator (receives Admin + Upgrader roles)
+    /// * `treasury` - Address that receives protocol fees
+    /// * `fee_bps` - Protocol fee in basis points (0–10,000)
+    ///
+    /// # Errors
+    /// * Panics if already initialized
+    /// * Panics if admin or treasury is the zero address
+    /// * Panics if fee_bps exceeds 10,000
     pub fn initialize(env: Env, admin: Address, treasury: Address, fee_bps: u32) {
         Self::bump_instance(&env);
         if env
@@ -732,6 +743,16 @@ impl LinkoraContract {
         .publish(&env);
     }
 
+    /// Grants a role to an account. Requires Admin role.
+    ///
+    /// # Arguments
+    /// * `admin` - Must hold the Admin role
+    /// * `account` - Address to receive the role
+    /// * `role` - Role to grant (Admin, Moderator, Pauser, or Upgrader)
+    ///
+    /// # Errors
+    /// * Panics if caller does not have Admin role
+    /// * Panics if either address is the zero address
     pub fn grant_role(env: Env, admin: Address, account: Address, role: Role) {
         Self::bump_instance(&env);
         admin.require_auth();
@@ -753,6 +774,16 @@ impl LinkoraContract {
         .publish(&env);
     }
 
+    /// Revokes a role from an account. Requires Admin role.
+    ///
+    /// # Arguments
+    /// * `admin` - Must hold the Admin role
+    /// * `account` - Address to revoke the role from
+    /// * `role` - Role to revoke
+    ///
+    /// # Errors
+    /// * Panics if caller does not have Admin role
+    /// * Panics if either address is the zero address
     pub fn revoke_role(env: Env, admin: Address, account: Address, role: Role) {
         Self::bump_instance(&env);
         admin.require_auth();
@@ -774,6 +805,11 @@ impl LinkoraContract {
         .publish(&env);
     }
 
+    /// Returns whether the given account holds the specified role.
+    ///
+    /// # Arguments
+    /// * `account` - Address to check
+    /// * `role` - Role to verify
     pub fn has_role(env: Env, account: Address, role: Role) -> bool {
         validate_non_default_address(&env, "account", &account);
         Self::has_role_internal(&env, &account, role)
@@ -781,6 +817,17 @@ impl LinkoraContract {
 
     // ── Profiles ──────────────────────────────────────────────────────────────
 
+    /// Creates or updates a user profile with a unique username.
+    ///
+    /// # Arguments
+    /// * `user` - Profile owner
+    /// * `username` - Unique display name (1–50 characters)
+    /// * `creator_token` - Address of the user's creator token
+    ///
+    /// # Errors
+    /// * Panics if username is already taken by another user
+    /// * Panics if username length is invalid
+    /// * Panics if either address is the zero address
     pub fn set_profile(env: Env, user: Address, username: String, creator_token: Address) {
         Self::bump_instance(&env);
         user.require_auth();
@@ -854,6 +901,14 @@ impl LinkoraContract {
         ProfileSetEvent { user, username }.publish(&env);
     }
 
+    /// Retrieves a user's profile by address.
+    ///
+    /// # Returns
+    /// * `Some(Profile)` if the profile exists
+    /// * `None` if no profile is found (or profile has expired)
+    ///
+    /// # Errors
+    /// * Panics with `RentError::Expired` if user was registered but profile expired
     pub fn get_profile(env: Env, user: Address) -> Option<Profile> {
         validate_non_default_address(&env, "user", &user);
         let key = StorageKey::Profile(user.clone());
@@ -895,6 +950,15 @@ impl LinkoraContract {
             .unwrap_or(0)
     }
 
+    /// Deletes the caller's profile and cleans up associated storage.
+    /// Places a tombstone so that `batch_cleanup_profile` can reclaim
+    /// remaining social-graph and authored-post storage lazily.
+    ///
+    /// # Arguments
+    /// * `user` - Profile owner to delete
+    ///
+    /// # Errors
+    /// * Panics if profile does not exist
     pub fn delete_profile(env: Env, user: Address) {
         Self::bump_instance(&env);
         user.require_auth();
@@ -954,6 +1018,17 @@ impl LinkoraContract {
         Self::bump(&env, &tombstone_key);
     }
 
+    /// Lazily cleans up storage entries left behind after `delete_profile`.
+    /// Removes followers, following edges, and authored posts in chunks
+    /// bounded by `max_entries` to avoid exceeding gas limits.
+    /// Idempotent: once all entries are cleaned, the tombstone is removed.
+    ///
+    /// # Arguments
+    /// * `user` - Previously deleted profile owner
+    /// * `max_entries` - Maximum storage entries to remove per call
+    ///
+    /// # Errors
+    /// * Panics if profile has not been deleted (no tombstone)
     pub fn batch_cleanup_profile(env: Env, user: Address, max_entries: u32) {
         Self::bump_instance(&env);
         let tombstone_key = StorageKey::DeletedProfile(user.clone());
@@ -1063,6 +1138,14 @@ impl LinkoraContract {
         }
     }
 
+    /// Resolves a username to its owner address.
+    ///
+    /// # Arguments
+    /// * `username` - The username to look up
+    ///
+    /// # Returns
+    /// * `Some(Address)` if the username is registered
+    /// * `None` if not found
     pub fn get_address_by_username(env: Env, username: String) -> Option<Address> {
         validate_username(&env, &username);
         let key = StorageKey::UsernameIndex(username);
@@ -1087,6 +1170,17 @@ impl LinkoraContract {
         Self::bump(&env, &key);
     }
 
+    /// Updates the user's Merkle credential root with an authority-signed message.
+    /// Verifies the Ed25519 signature from the registered credential authority.
+    ///
+    /// # Arguments
+    /// * `user` - Credential root owner
+    /// * `new_root` - New Merkle root to store
+    /// * `signature` - Ed25519 signature from the credential authority
+    ///
+    /// # Errors
+    /// * Panics if credential authority is not set
+    /// * Panics if signature verification fails
     pub fn update_credential_root(
         env: Env,
         user: Address,
@@ -1122,6 +1216,18 @@ impl LinkoraContract {
         .publish(&env);
     }
 
+    /// Verifies a Merkle proof against the user's stored credential root.
+    /// Uses a nullifier to prevent proof replay. Returns true on success.
+    ///
+    /// # Arguments
+    /// * `user` - Credential root owner
+    /// * `proof` - Merkle proof path (sibling hashes)
+    /// * `leaf` - The leaf hash being proven
+    /// * `nullifier` - Unique nullifier to prevent replay
+    ///
+    /// # Returns
+    /// * `true` if the proof is valid and nullifier is unused
+    /// * `false` if proof is invalid, root not set, or nullifier already used
     pub fn verify_credential(
         env: Env,
         user: Address,
@@ -1160,6 +1266,11 @@ impl LinkoraContract {
         true
     }
 
+    /// Retrieves the stored Merkle credential root for a user.
+    ///
+    /// # Returns
+    /// * `Some(BytesN<32>)` if the user has a credential root set
+    /// * `None` if the user has no credential root
     pub fn get_credential_root(env: Env, user: Address) -> Option<BytesN<32>> {
         validate_non_default_address(&env, "user", &user);
         let key = StorageKey::CredentialRoot(user);
@@ -1202,6 +1313,19 @@ impl LinkoraContract {
 
     // ── Social Graph (ADR-001: adjacency-set with per-user counters) ────────
 
+    /// Follows a user. Idempotent: no-op if already following.
+    /// Updates both the follower's following-index and the followee's followers-index.
+    /// Blocked users cannot follow each other.
+    ///
+    /// # Arguments
+    /// * `follower` - Address performing the follow
+    /// * `followee` - Address to follow
+    ///
+    /// # Errors
+    /// * Panics if follower == followee
+    /// * Panics if either user has blocked the other
+    /// * Panics if contract is paused
+    /// * Panics if social-graph storage has expired (rent unpaid)
     pub fn follow(env: Env, follower: Address, followee: Address) {
         Self::bump_instance(&env);
         follower.require_auth();
@@ -1318,6 +1442,16 @@ impl LinkoraContract {
         FollowEvent { follower, followee }.publish(&env);
     }
 
+    /// Unfollows a user. Idempotent: no-op if not following.
+    /// Removes the edge and swap-removes entries from both indexes.
+    ///
+    /// # Arguments
+    /// * `follower` - Address performing the unfollow
+    /// * `followee` - Address to unfollow
+    ///
+    /// # Errors
+    /// * Panics if follower == followee
+    /// * Panics if contract is paused
     pub fn unfollow(env: Env, follower: Address, followee: Address) {
         Self::bump_instance(&env);
         follower.require_auth();
@@ -1350,6 +1484,12 @@ impl LinkoraContract {
         UnfollowEvent { follower, followee }.publish(&env);
     }
 
+    /// Returns a paginated list of addresses that `user` is following.
+    ///
+    /// # Arguments
+    /// * `user` - Address to query
+    /// * `offset` - Pagination offset (0-based)
+    /// * `limit` - Number of results (1–50)
     pub fn get_following(env: Env, user: Address, offset: u32, limit: u32) -> Vec<Address> {
         validate_non_default_address(&env, "user", &user);
         assert!(
@@ -1359,6 +1499,12 @@ impl LinkoraContract {
         Self::paginate_index(&env, &user, offset, limit, true)
     }
 
+    /// Returns a paginated list of addresses following `user`.
+    ///
+    /// # Arguments
+    /// * `user` - Address to query
+    /// * `offset` - Pagination offset (0-based)
+    /// * `limit` - Number of results (1–50)
     pub fn get_followers(env: Env, user: Address, offset: u32, limit: u32) -> Vec<Address> {
         validate_non_default_address(&env, "user", &user);
         assert!(
@@ -1504,6 +1650,17 @@ impl LinkoraContract {
 
     // ── Block List ────────────────────────────────────────────────────────────
 
+    /// Blocks a user. Removes any existing follow relationships and likes
+    /// between the two parties. Blocked users cannot follow, tip, or like
+    /// each other's posts.
+    ///
+    /// # Arguments
+    /// * `blocker` - Address performing the block
+    /// * `blocked` - Address to block
+    ///
+    /// # Errors
+    /// * Panics if blocker == blocked
+    /// * Panics if contract is paused
     pub fn block_user(env: Env, blocker: Address, blocked: Address) {
         Self::bump_instance(&env);
         blocker.require_auth();
@@ -1534,6 +1691,15 @@ impl LinkoraContract {
         BlockEvent { blocker, blocked }.publish(&env);
     }
 
+    /// Unblocks a previously blocked user.
+    ///
+    /// # Arguments
+    /// * `blocker` - Address that performed the block
+    /// * `blocked` - Address to unblock
+    ///
+    /// # Errors
+    /// * Panics if blocker == blocked
+    /// * Panics if contract is paused
     pub fn unblock_user(env: Env, blocker: Address, blocked: Address) {
         Self::bump_instance(&env);
         blocker.require_auth();
@@ -1557,6 +1723,7 @@ impl LinkoraContract {
         UnblockEvent { blocker, blocked }.publish(&env);
     }
 
+    /// Returns whether `blocker` has blocked `blocked`.
     pub fn is_blocked(env: Env, blocker: Address, blocked: Address) -> bool {
         validate_non_default_address(&env, "blocker", &blocker);
         validate_non_default_address(&env, "blocked", &blocked);
@@ -1576,6 +1743,19 @@ impl LinkoraContract {
 
     // ── Posts ─────────────────────────────────────────────────────────────────
 
+    /// Creates a new post with the given content.
+    ///
+    /// # Arguments
+    /// * `author` - Post author (must be authenticated)
+    /// * `content` - Post content (max 2,000 bytes)
+    ///
+    /// # Returns
+    /// The unique post ID.
+    ///
+    /// # Errors
+    /// * Panics if content exceeds max length
+    /// * Panics if author is the zero address
+    /// * Panics if contract is paused
     pub fn create_post(env: Env, author: Address, content: String) -> u64 {
         Self::bump_instance(&env);
         author.require_auth();
@@ -1620,6 +1800,14 @@ impl LinkoraContract {
         env.storage().instance().get(&POST_CT).unwrap_or(0u64)
     }
 
+    /// Retrieves a post by its ID.
+    ///
+    /// # Arguments
+    /// * `id` - Post ID (must be positive)
+    ///
+    /// # Returns
+    /// * `Some(Post)` if the post exists
+    /// * `None` if not found or deleted
     pub fn get_post(env: Env, id: u64) -> Option<Post> {
         require_with_error!(&env, id > 0, "post id must be positive");
         let key = StorageKey::Post(id);
@@ -1630,6 +1818,17 @@ impl LinkoraContract {
         result
     }
 
+    /// Deletes a post. Only the author can delete their own post.
+    /// Places a tombstone for lazy cleanup of associated storage.
+    ///
+    /// # Arguments
+    /// * `author` - Post author (must be authenticated)
+    /// * `post_id` - ID of the post to delete
+    ///
+    /// # Errors
+    /// * Panics if post does not exist
+    /// * Panics if caller is not the post author
+    /// * Panics if contract is paused
     pub fn delete_post(env: Env, author: Address, post_id: u64) {
         Self::bump_instance(&env);
         author.require_auth();
@@ -1668,6 +1867,17 @@ impl LinkoraContract {
         PostDeleted { post_id, author }.publish(&env);
     }
 
+    /// Lazily cleans up storage entries left behind after `delete_post`.
+    /// Removes likes, reports, and tip cooldowns in chunks bounded by
+    /// `max_entries`. Idempotent: tombstone is removed once all entries
+    /// are cleaned.
+    ///
+    /// # Arguments
+    /// * `post_id` - Previously deleted post ID
+    /// * `max_entries` - Maximum storage entries to remove per call
+    ///
+    /// # Errors
+    /// * Panics if post has not been deleted (no tombstone)
     pub fn batch_cleanup_post(env: Env, post_id: u64, max_entries: u32) {
         Self::bump_instance(&env);
         let tombstone_key = StorageKey::DeletedPost(post_id);
@@ -1759,6 +1969,12 @@ impl LinkoraContract {
         }
     }
 
+    /// Returns a paginated list of post IDs authored by the given address.
+    ///
+    /// # Arguments
+    /// * `author` - Post author
+    /// * `offset` - Pagination offset (0-based)
+    /// * `limit` - Number of results (1–50)
     pub fn get_posts_by_author(env: Env, author: Address, offset: u32, limit: u32) -> Vec<u64> {
         validate_non_default_address(&env, "author", &author);
         assert!(
@@ -1783,6 +1999,17 @@ impl LinkoraContract {
 
     // ── Reactions ─────────────────────────────────────────────────────────────
 
+    /// Likes a post. Idempotent: no-op if already liked.
+    /// Blocked users cannot like each other's posts.
+    ///
+    /// # Arguments
+    /// * `user` - Address performing the like
+    /// * `post_id` - ID of the post to like
+    ///
+    /// # Errors
+    /// * Panics if post does not exist
+    /// * Panics if either user has blocked the other
+    /// * Panics if contract is paused
     pub fn like_post(env: Env, user: Address, post_id: u64) {
         Self::bump_instance(&env);
         user.require_auth();
@@ -1828,6 +2055,10 @@ impl LinkoraContract {
         LikePostEvent { user, post_id }.publish(&env);
     }
 
+    /// Returns the number of likes on a post.
+    ///
+    /// # Arguments
+    /// * `post_id` - Post ID (must be positive)
     pub fn get_like_count(env: Env, post_id: u64) -> u64 {
         require_with_error!(&env, post_id > 0, "post id must be positive");
         let key = StorageKey::Post(post_id);
@@ -1835,6 +2066,7 @@ impl LinkoraContract {
         result.map(|p| p.like_count).unwrap_or(0)
     }
 
+    /// Returns whether the given user has liked the specified post.
     pub fn has_liked(env: Env, user: Address, post_id: u64) -> bool {
         validate_non_default_address(&env, "user", &user);
         require_with_error!(&env, post_id > 0, "post id must be positive");
@@ -1844,6 +2076,21 @@ impl LinkoraContract {
 
     // ── Tipping ───────────────────────────────────────────────────────────────
 
+    /// Sends a tip to a post's author. A protocol fee is deducted and sent
+    /// to the treasury. Subject to a configurable per-tipper-per-post cooldown.
+    ///
+    /// # Arguments
+    /// * `tipper` - Address sending the tip (must be authenticated)
+    /// * `post_id` - ID of the post to tip
+    /// * `token` - SPL token address to transfer
+    /// * `amount` - Amount in smallest token units (must be positive)
+    ///
+    /// # Errors
+    /// * Panics if post does not exist
+    /// * Panics if tipper == post author
+    /// * Panics if either party has blocked the other
+    /// * Panics if tip cooldown has not expired
+    /// * Panics if amount exceeds MAX_PROTOCOL_AMOUNT
     pub fn tip(env: Env, tipper: Address, post_id: u64, token: Address, amount: i128) {
         Self::bump_instance(&env);
         tipper.require_auth();
@@ -1902,6 +2149,8 @@ impl LinkoraContract {
         }
 
         let fee_bps = Self::get_fee_bps(env.clone());
+        // amount * fee_bps can overflow i128 (max 10^40 > 10^38), so split the
+        // multiplication: floor(amount / 10000) * fee_bps + (remainder * fee_bps) / 10000.
         let fee_amount =
             (amount / 10_000) * fee_bps as i128 + (amount % 10_000) * fee_bps as i128 / 10_000;
         let author_amount = amount - fee_amount;
@@ -1977,6 +2226,17 @@ impl LinkoraContract {
         .publish(&env);
     }
 
+    /// Deposits tokens into a community pool. Anyone can deposit.
+    ///
+    /// # Arguments
+    /// * `depositor` - Address making the deposit (must be authenticated)
+    /// * `pool_id` - Pool identifier
+    /// * `token` - SPL token address (must match pool's token)
+    /// * `amount` - Amount to deposit (must be positive)
+    ///
+    /// # Errors
+    /// * Panics if pool does not exist
+    /// * Panics if token does not match pool's token
     pub fn pool_deposit(
         env: Env,
         depositor: Address,
@@ -2061,6 +2321,14 @@ impl LinkoraContract {
         .publish(&env);
     }
 
+    /// Returns pool metadata including balance, token, and threshold.
+    ///
+    /// # Arguments
+    /// * `pool_id` - Pool identifier
+    ///
+    /// # Returns
+    /// * `Some(Pool)` if the pool exists
+    /// * `None` if not found
     pub fn get_pool(env: Env, pool_id: Symbol) -> Option<Pool> {
         let key = StorageKey::Pool(pool_id);
         let result: Option<Pool> = env.storage().persistent().get(&key);
@@ -2070,6 +2338,13 @@ impl LinkoraContract {
         result
     }
 
+    /// Returns the list of admin addresses for a pool.
+    ///
+    /// # Arguments
+    /// * `pool_id` - Pool identifier
+    ///
+    /// # Errors
+    /// * Panics if pool does not exist
     pub fn get_pool_admins(env: Env, pool_id: Symbol) -> Vec<Address> {
         let key = StorageKey::Pool(pool_id);
         let pool: Pool = env
@@ -2081,6 +2356,16 @@ impl LinkoraContract {
         pool.admins
     }
 
+    /// Adds an admin to a pool. Requires M-of-N admin signatures.
+    ///
+    /// # Arguments
+    /// * `signers` - Admin signers (must meet threshold)
+    /// * `pool_id` - Pool identifier
+    /// * `new_admin` - Address to add as admin
+    ///
+    /// # Errors
+    /// * Panics if insufficient signers or unauthorized signer
+    /// * Panics if new_admin is already an admin
     pub fn add_pool_admin(env: Env, signers: Vec<Address>, pool_id: Symbol, new_admin: Address) {
         Self::bump_instance(&env);
         validate_address_list(&env, "signers", &signers);
@@ -2113,6 +2398,18 @@ impl LinkoraContract {
         PoolAdminAddedEvent { pool_id, new_admin }.publish(&env);
     }
 
+    /// Removes an admin from a pool. Requires M-of-N admin signatures.
+    /// Ensures the threshold remains achievable after removal.
+    ///
+    /// # Arguments
+    /// * `signers` - Admin signers (must meet threshold)
+    /// * `pool_id` - Pool identifier
+    /// * `admin` - Address to remove from admins
+    ///
+    /// # Errors
+    /// * Panics if insufficient signers or unauthorized signer
+    /// * Panics if admin is not in the pool
+    /// * Panics if removal would make threshold unreachable
     pub fn remove_pool_admin(env: Env, signers: Vec<Address>, pool_id: Symbol, admin: Address) {
         Self::bump_instance(&env);
         validate_address_list(&env, "signers", &signers);
@@ -2155,6 +2452,17 @@ impl LinkoraContract {
         PoolAdminRemovedEvent { pool_id, admin }.publish(&env);
     }
 
+    /// Updates the M-of-N withdrawal threshold for a pool.
+    /// Requires M-of-N admin signatures.
+    ///
+    /// # Arguments
+    /// * `signers` - Admin signers (must meet current threshold)
+    /// * `pool_id` - Pool identifier
+    /// * `threshold` - New threshold (1–100, must not exceed admin count)
+    ///
+    /// # Errors
+    /// * Panics if insufficient signers or unauthorized signer
+    /// * Panics if threshold exceeds admin count
     pub fn update_pool_threshold(env: Env, signers: Vec<Address>, pool_id: Symbol, threshold: u32) {
         Self::bump_instance(&env);
         validate_address_list(&env, "signers", &signers);
@@ -2195,6 +2503,16 @@ impl LinkoraContract {
 
     // ── Fee & Treasury ────────────────────────────────────────────────────────
 
+    /// Sets the protocol fee in basis points. Requires Admin role.
+    ///
+    /// # Arguments
+    /// * `admin` - Must hold the Admin role
+    /// * `fee_bps` - New fee in basis points (0–10,000)
+    ///
+    /// # Errors
+    /// * Panics if caller does not have Admin role
+    /// * Panics if fee_bps exceeds 10,000
+    /// * Panics if contract is paused
     pub fn set_fee(env: Env, admin: Address, fee_bps: u32) {
         Self::bump_instance(&env);
         admin.require_auth();
@@ -2217,6 +2535,16 @@ impl LinkoraContract {
         .publish(&env);
     }
 
+    /// Sets the treasury address that receives protocol fees. Requires Admin role.
+    ///
+    /// # Arguments
+    /// * `admin` - Must hold the Admin role
+    /// * `treasury` - New treasury address
+    ///
+    /// # Errors
+    /// * Panics if caller does not have Admin role
+    /// * Panics if treasury is the zero address
+    /// * Panics if contract is paused
     pub fn set_treasury(env: Env, admin: Address, treasury: Address) {
         Self::bump_instance(&env);
         admin.require_auth();
@@ -2238,14 +2566,27 @@ impl LinkoraContract {
         .publish(&env);
     }
 
+    /// Returns the current protocol fee in basis points.
     pub fn get_fee_bps(env: Env) -> u32 {
         env.storage().instance().get(&FEE_BPS).unwrap_or(0u32)
     }
 
+    /// Returns the current treasury address.
     pub fn get_treasury(env: Env) -> Option<Address> {
         env.storage().instance().get(&TREASURY)
     }
 
+    /// Sets the tip cooldown window in ledgers. Requires Admin role.
+    /// Controls how many ledgers must pass between tips from the same
+    /// tipper on the same post.
+    ///
+    /// # Arguments
+    /// * `admin` - Must hold the Admin role
+    /// * `cooldown_ledgers` - Number of ledgers (1–u32::MAX)
+    ///
+    /// # Errors
+    /// * Panics if caller does not have Admin role
+    /// * Panics if contract is paused
     pub fn set_tip_cooldown_window(env: Env, admin: Address, cooldown_ledgers: u32) {
         Self::bump_instance(&env);
         admin.require_auth();
@@ -2259,6 +2600,7 @@ impl LinkoraContract {
             .set(&TIP_COOLDOWN_WINDOW, &cooldown_ledgers);
     }
 
+    /// Returns the current tip cooldown window in ledgers.
     pub fn get_tip_cooldown_window(env: Env) -> u32 {
         env.storage()
             .instance()
@@ -2268,6 +2610,19 @@ impl LinkoraContract {
 
     // ── Governance ────────────────────────────────────────────────────────────
 
+    /// Initializes the governance configuration. Requires Admin role.
+    ///
+    /// # Arguments
+    /// * `admin` - Must hold the Admin role
+    /// * `quorum` - Required approval percentage (1–100)
+    /// * `time_lock_ledgers` - Ledgers to wait after voting ends before execution
+    /// * `vote_window_ledgers` - Duration of the voting window in ledgers
+    /// * `quorum_decay_rate_bps` - Rate at which quorum decays over time (0–10,000)
+    /// * `quorum_floor` - Minimum quorum that decay cannot go below
+    ///
+    /// # Errors
+    /// * Panics if caller does not have Admin role
+    /// * Panics if quorum > 100 or quorum_floor > quorum
     pub fn gov_init_config(
         env: Env,
         admin: Address,
@@ -2311,6 +2666,10 @@ impl LinkoraContract {
         Self::bump(&env, &key);
     }
 
+    /// Returns the current governance configuration.
+    ///
+    /// # Errors
+    /// * Panics if governance has not been configured
     pub fn gov_get_config(env: Env) -> GovConfig {
         let key = StorageKey::GovConfig;
         let config: GovConfig = env
@@ -2322,6 +2681,20 @@ impl LinkoraContract {
         config
     }
 
+    /// Creates a governance proposal to change a protocol parameter.
+    ///
+    /// # Arguments
+    /// * `proposer` - Address creating the proposal
+    /// * `parameter` - Governance parameter to change
+    /// * `new_value` - Proposed new value (must fit in u32)
+    /// * `new_address` - For treasury proposals, the new treasury address
+    ///
+    /// # Returns
+    /// The proposal ID.
+    ///
+    /// # Errors
+    /// * Panics if parameter value is out of valid range
+    /// * Panics if treasury proposal is missing new_address
     pub fn gov_propose(
         env: Env,
         proposer: Address,
@@ -2407,6 +2780,17 @@ impl LinkoraContract {
         id
     }
 
+    /// Casts a vote on an active governance proposal.
+    ///
+    /// # Arguments
+    /// * `voter` - Address casting the vote
+    /// * `proposal_id` - ID of the proposal to vote on
+    /// * `support` - true = for, false = against
+    ///
+    /// # Errors
+    /// * Panics if proposal is not active
+    /// * Panics if vote window has closed
+    /// * Panics if voter has already voted
     pub fn gov_vote(env: Env, voter: Address, proposal_id: u64, support: bool) {
         Self::bump_instance(&env);
         voter.require_auth();
@@ -2448,6 +2832,12 @@ impl LinkoraContract {
         .publish(&env);
     }
 
+    /// Computes the effective quorum for a proposal, accounting for time-based
+    /// decay. The quorum decays linearly from the initial value toward
+    /// `quorum_floor` based on elapsed ledgers since creation.
+    ///
+    /// # Arguments
+    /// * `proposal_id` - ID of the proposal
     pub fn effective_quorum(env: Env, proposal_id: u64) -> u32 {
         let config_key = StorageKey::GovConfig;
         let config: GovConfig = env
@@ -2483,6 +2873,16 @@ impl LinkoraContract {
         }
     }
 
+    /// Executes a passed governance proposal after the time-lock expires.
+    /// Applies the parameter change and marks the proposal as executed.
+    ///
+    /// # Arguments
+    /// * `proposal_id` - ID of the proposal to execute
+    ///
+    /// # Errors
+    /// * Panics if proposal is not active
+    /// * Panics if time-lock has not expired
+    /// * Panics if quorum is not met
     pub fn gov_execute(env: Env, proposal_id: u64) {
         Self::bump_instance(&env);
         require_with_error!(&env, proposal_id > 0, "proposal id must be positive");
@@ -2583,6 +2983,17 @@ impl LinkoraContract {
         .publish(&env);
     }
 
+    /// Vetoes an active governance proposal during the time-lock window.
+    /// Requires M-of-N signatures from the specified pool's admins.
+    ///
+    /// # Arguments
+    /// * `signers` - Pool admin signers (must meet threshold)
+    /// * `pool_id` - Pool whose admins are vetoing
+    /// * `proposal_id` - ID of the proposal to veto
+    ///
+    /// # Errors
+    /// * Panics if not within the time-lock window
+    /// * Panics if insufficient signers or unauthorized signer
     pub fn gov_veto(env: Env, signers: Vec<Address>, pool_id: Symbol, proposal_id: u64) {
         Self::bump_instance(&env);
         validate_address_list(&env, "signers", &signers);
@@ -2629,6 +3040,13 @@ impl LinkoraContract {
         GovProposalVetoedEvent { proposal_id }.publish(&env);
     }
 
+    /// Retrieves a governance proposal by ID.
+    ///
+    /// # Arguments
+    /// * `proposal_id` - Proposal ID (must be positive)
+    ///
+    /// # Errors
+    /// * Panics if proposal does not exist
     pub fn gov_get_proposal(env: Env, proposal_id: u64) -> GovProposal {
         require_with_error!(&env, proposal_id > 0, "proposal id must be positive");
         let key = StorageKey::GovProposal(proposal_id);
@@ -2718,6 +3136,17 @@ impl LinkoraContract {
 
     // ── Upgradability ─────────────────────────────────────────────────────────
 
+    /// Upgrades the contract WASM. Requires Upgrader role.
+    /// Increments the contract version and deploys the new implementation.
+    ///
+    /// # Arguments
+    /// * `upgrader` - Must hold the Upgrader role
+    /// * `new_wasm_hash` - Hash of the new WASM bytecode
+    ///
+    /// # Errors
+    /// * Panics if caller does not have Upgrader role
+    /// * Panics if wasm hash is all zeros
+    /// * Panics if contract is paused
     pub fn upgrade(env: Env, upgrader: Address, new_wasm_hash: BytesN<32>) {
         Self::bump_instance(&env);
         let mut state: ContractState = env.storage().instance().get(&CONTRACT_STATE).unwrap();
@@ -2743,6 +3172,19 @@ impl LinkoraContract {
 
     // ── Storage Rent Lifecycle Management ─────────────────────────────────────
 
+    /// Extends the storage TTL for all of a user's on-chain data by paying
+    /// tokens. The extension duration is calculated from the rent rate and
+    /// token decimals. Payment goes to the treasury.
+    ///
+    /// # Arguments
+    /// * `user` - Profile owner whose storage to extend
+    /// * `token` - SPL token to pay with
+    /// * `amount` - Payment amount in smallest token units
+    ///
+    /// # Errors
+    /// * Panics if rent rate is not configured
+    /// * Panics if amount is too small for any extension
+    /// * Panics if treasury is not set
     pub fn pay_rent(env: Env, user: Address, token: Address, amount: i128) {
         Self::bump_instance(&env);
         user.require_auth();
@@ -2804,6 +3246,21 @@ impl LinkoraContract {
         .publish(&env);
     }
 
+    /// Reports a post for moderation. The reporter must stake tokens as
+    /// collateral. If the report is upheld, the stake is returned; if
+    /// dismissed, the stake goes to the treasury.
+    ///
+    /// # Arguments
+    /// * `reporter` - Address filing the report (must be authenticated)
+    /// * `post_id` - ID of the post to report
+    /// * `token` - SPL token for the stake
+    /// * `stake_amount` - Amount to stake (must be positive)
+    /// * `reason_hash` - SHA-256 hash of the report reason
+    ///
+    /// # Errors
+    /// * Panics if reporter is the post author
+    /// * Panics if post does not exist
+    /// * Panics if already reported by this reporter
     pub fn report_post(
         env: Env,
         reporter: Address,
@@ -2870,6 +3327,13 @@ impl LinkoraContract {
         .publish(&env);
     }
 
+    /// Returns the ledger number at which the user's storage will expire.
+    ///
+    /// # Arguments
+    /// * `user` - Profile owner
+    ///
+    /// # Errors
+    /// * Panics if profile does not exist
     pub fn get_rent_expiry(env: Env, user: Address) -> u32 {
         validate_non_default_address(&env, "user", &user);
         #[cfg(test)]
@@ -2907,6 +3371,14 @@ impl LinkoraContract {
         }
     }
 
+    /// Sets the rent rate in basis points. Requires Admin role.
+    ///
+    /// # Arguments
+    /// * `admin` - Must hold the Admin role
+    /// * `rate` - Rent rate in basis points (1–10,000)
+    ///
+    /// # Errors
+    /// * Panics if caller does not have Admin role
     pub fn set_rent_rate_bps(env: Env, admin: Address, rate: u32) {
         admin.require_auth();
         validate_non_default_address(&env, "admin", &admin);
@@ -2915,6 +3387,7 @@ impl LinkoraContract {
         env.storage().instance().set(&RENT_RATE_BPS_KEY, &rate);
     }
 
+    /// Returns the current rent rate in basis points. Defaults to 100.
     pub fn get_rent_rate_bps(env: Env) -> u32 {
         env.storage()
             .instance()
@@ -2922,6 +3395,16 @@ impl LinkoraContract {
             .unwrap_or(100)
     }
 
+    /// Admin function to extend TTL for up to 50 of a user's storage keys.
+    /// Useful for maintaining active users' data without requiring them
+    /// to pay rent individually.
+    ///
+    /// # Arguments
+    /// * `admin` - Must hold the Admin role
+    /// * `user` - User whose graph storage to bump
+    ///
+    /// # Returns
+    /// Number of keys that were bumped.
     pub fn batch_bump_user_graph(env: Env, admin: Address, user: Address) -> u32 {
         admin.require_auth();
         validate_non_default_address(&env, "admin", &admin);
@@ -3038,6 +3521,23 @@ impl LinkoraContract {
         keys
     }
 
+    /// Reviews a pending report with a moderator verdict.
+    /// Requires the Moderator role and M-of-N signatures from the 'mods' pool.
+    ///
+    /// If upheld: deletes the post, optionally slashes the author's creator
+    /// tokens, and returns the reporter's stake.
+    /// If dismissed: sends the reporter's stake to the treasury.
+    ///
+    /// # Arguments
+    /// * `moderator` - Address performing the review (must have Moderator role)
+    /// * `signers` - Mods pool admin signers (must meet threshold)
+    /// * `post_id` - ID of the reported post
+    /// * `reporter` - Address that filed the report
+    /// * `verdict` - Upheld or Dismissed
+    ///
+    /// # Errors
+    /// * Panics if report is not pending
+    /// * Panics if insufficient signers or unauthorized signer
     pub fn review_report(
         env: Env,
         moderator: Address,
@@ -3187,6 +3687,15 @@ impl LinkoraContract {
         Self::bump(&env, &report_key);
     }
 
+    /// Retrieves a report by post ID and reporter.
+    ///
+    /// # Arguments
+    /// * `post_id` - ID of the reported post
+    /// * `reporter` - Address that filed the report
+    ///
+    /// # Returns
+    /// * `Some(Report)` if the report exists
+    /// * `None` if not found
     pub fn get_report(env: Env, post_id: u64, reporter: Address) -> Option<Report> {
         validate_non_default_address(&env, "reporter", &reporter);
         require_with_error!(&env, post_id > 0, "post id must be positive");
@@ -3198,26 +3707,12 @@ impl LinkoraContract {
         result
     }
 
+    /// Returns the total number of reports filed against a post.
     pub fn get_report_count(env: Env, post_id: u64) -> u32 {
         require_with_error!(&env, post_id > 0, "post id must be positive");
         let key = StorageKey::ReportCount(post_id);
         let result = env.storage().persistent().get(&key).unwrap_or(0u32);
         if result > 0 {
-            Self::bump(&env, &key);
-        }
-        result
-    }
-
-    /// Retrieves the stored Merkle credential root for a user.
-    ///
-    /// # Returns
-    /// * `Some(BytesN<32>)` if the user has a credential root set
-    /// * `None` if the user has no credential root
-    pub fn get_credential_root(env: Env, user: Address) -> Option<BytesN<32>> {
-        validate_non_default_address(&env, "user", &user);
-        let key = StorageKey::CredentialRoot(user.clone());
-        let result: Option<BytesN<32>> = env.storage().persistent().get(&key);
-        if result.is_some() {
             Self::bump(&env, &key);
         }
         result
@@ -3284,6 +3779,14 @@ impl LinkoraContract {
 
     // ── Emergency Pause ──────────────────────────────────────────────────────
 
+    /// Pauses the contract. When paused, state-mutating functions
+    /// (follow, post, tip, etc.) will panic. Requires Pauser role.
+    ///
+    /// # Arguments
+    /// * `admin` - Must hold the Pauser role
+    ///
+    /// # Errors
+    /// * Panics if already paused
     pub fn pause(env: Env, admin: Address) {
         admin.require_auth();
         Self::require_role(&env, &admin, Role::Pauser);
@@ -3294,6 +3797,14 @@ impl LinkoraContract {
         PausedEvent { admin }.publish(&env);
     }
 
+    /// Unpauses the contract, re-enabling state-mutating functions.
+    /// Requires Pauser role.
+    ///
+    /// # Arguments
+    /// * `admin` - Must hold the Pauser role
+    ///
+    /// # Errors
+    /// * Panics if not currently paused
     pub fn unpause(env: Env, admin: Address) {
         admin.require_auth();
         Self::require_role(&env, &admin, Role::Pauser);
@@ -3304,6 +3815,7 @@ impl LinkoraContract {
         UnpausedEvent { admin }.publish(&env);
     }
 
+    /// Returns whether the contract is currently paused.
     pub fn is_paused(env: Env) -> bool {
         env.storage()
             .instance()

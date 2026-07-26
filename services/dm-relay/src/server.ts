@@ -137,19 +137,59 @@ async function createApp() {
   app.use(errorHandler);
 
   // WebSocket server for real-time push to online recipients
-  // Clients connect with ?address=<STELLAR_ADDRESS> to receive their messages.
+  // Clients connect with ?address=<STELLAR_ADDRESS> and must complete a
+  // challenge-response handshake to prove ownership of the address.
   const httpServer = http.createServer(app);
   const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 
+  const WS_AUTH_TIMEOUT_MS = 15_000;
+
   wss.on("connection", (ws: WebSocket, req) => {
-    const url = new URL(req.url ?? "/", `http://localhost`);
+    const url = new URL(req.url ?? "/", "http://localhost");
     const address = url.searchParams.get("address") ?? "";
-    if (address) {
-      registerWsClient(address, ws);
-      logger.info({ address }, "WebSocket client connected");
-    } else {
+
+    if (!address) {
       ws.close(1008, "Missing address query param");
+      return;
     }
+
+    // Send a challenge that the client must sign to prove ownership
+    const { challenge, timestamp } = authService.createWsChallenge(address);
+    ws.send(JSON.stringify({ type: "challenge", challenge, timestamp }));
+
+    let authenticated = false;
+    const authTimer = setTimeout(() => {
+      if (!authenticated) {
+        ws.close(4001, "Authentication timeout");
+      }
+    }, WS_AUTH_TIMEOUT_MS);
+
+    const onAuthMessage = (data: Buffer) => {
+      if (authenticated) return;
+
+      try {
+        const msg = JSON.parse(data.toString());
+        if (msg.type !== "auth_response") return;
+
+        authService.verifyWsChallenge(address, challenge, timestamp, msg.signature);
+
+        clearTimeout(authTimer);
+        authenticated = true;
+        ws.removeListener("message", onAuthMessage);
+
+        registerWsClient(address, ws);
+        ws.send(JSON.stringify({ type: "auth_success" }));
+        logger.info({ address }, "WebSocket client authenticated");
+      } catch (err) {
+        clearTimeout(authTimer);
+        const reason =
+          err instanceof Error ? err.message : "Authentication failed";
+        ws.close(4003, reason);
+        logger.warn({ address, err }, "WebSocket auth failed");
+      }
+    };
+
+    ws.on("message", onAuthMessage);
   });
 
   // Graceful shutdown
