@@ -37,15 +37,19 @@ fn upload_upgrade_wasm(env: &Env) -> BytesN<32> {
 // Mirrors `LinkoraContract::credential_root_message_hash` so tests can produce
 // signatures the contract will accept, without exposing that private helper.
 
-fn credential_authority_signing_key(seed: u8) -> SigningKey {
+pub(crate) fn credential_authority_signing_key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
-fn credential_authority_pubkey(env: &Env, signing_key: &SigningKey) -> BytesN<32> {
+pub(crate) fn credential_authority_pubkey(env: &Env, signing_key: &SigningKey) -> BytesN<32> {
     BytesN::from_array(env, &signing_key.verifying_key().to_bytes())
 }
 
-fn sign_credential_root(env: &Env, signing_key: &SigningKey, root: &BytesN<32>) -> BytesN<64> {
+pub(crate) fn sign_credential_root(
+    env: &Env,
+    signing_key: &SigningKey,
+    root: &BytesN<32>,
+) -> BytesN<64> {
     let mut data = Bytes::new(env);
     data.append(&root.to_bytes());
 
@@ -58,6 +62,30 @@ fn sign_credential_root(env: &Env, signing_key: &SigningKey, root: &BytesN<32>) 
     let message_hash: BytesN<32> = env.crypto().sha256(&data).into();
     let signature = signing_key.sign(&message_hash.to_array());
     BytesN::from_array(env, &signature.to_bytes())
+}
+
+/// Mirrors `LinkoraContract::hash_merkle_pair`/`hash_ordered_pair`: at each
+/// proof step, sha256 the current node and sibling concatenated in ascending
+/// byte order, so tests can compute the root a given (leaf, proof) verifies
+/// against without exposing the contract's private helper.
+pub(crate) fn merkle_root_from_proof(
+    env: &Env,
+    leaf: &BytesN<32>,
+    proof: &Vec<BytesN<32>>,
+) -> BytesN<32> {
+    let mut current = leaf.clone();
+    for sibling in proof.iter() {
+        let (left, right) = if current.to_array() <= sibling.to_array() {
+            (current.clone(), sibling.clone())
+        } else {
+            (sibling.clone(), current.clone())
+        };
+        let mut data = Bytes::new(env);
+        data.append(&left.to_bytes());
+        data.append(&right.to_bytes());
+        current = env.crypto().sha256(&data).into();
+    }
+    current
 }
 
 #[test]
@@ -1288,7 +1316,9 @@ fn test_pool_deposit_correct_token_succeeds() {
     assert_eq!(client.get_pool(&pool_id).unwrap().balance, 100);
     assert_eq!(TokenClient::new(&env, &token).balance(&other_user), 900);
 
-    // A second deposit accumulates on the existing balance
+    // A second deposit accumulates on the existing balance, once the
+    // per-depositor pool deposit cooldown has elapsed.
+    env.ledger().with_mut(|l| l.sequence_number += 1000);
     client.pool_deposit(&other_user, &pool_id, &token, &50);
     assert_eq!(client.get_pool(&pool_id).unwrap().balance, 150);
 }
@@ -1375,7 +1405,7 @@ fn test_initialize_stores_contract_state_version() {
 }
 
 #[test]
-#[should_panic(expected = "username must be at most 50 characters")]
+#[should_panic(expected = "username must be at most 32 characters")]
 fn test_set_profile_rejects_oversized_username() {
     let env = Env::default();
     env.mock_all_auths();
@@ -1404,7 +1434,7 @@ fn test_set_profile_rejects_zero_address() {
 }
 
 #[test]
-#[should_panic(expected = "content must be at most 2000 characters")]
+#[should_panic(expected = "content must be at most 280 characters")]
 fn test_create_post_rejects_oversized_content() {
     let env = Env::default();
     env.mock_all_auths();
@@ -1474,7 +1504,9 @@ fn test_report_post_uphold_with_slashing() {
 
     // Set moderation slash to 10% (1000 bps)
     env.as_contract(&client.address, || {
-        env.storage().instance().set(&MODERATION_SLASH_BPS, &1000u32);
+        env.storage()
+            .instance()
+            .set(&MODERATION_SLASH_BPS, &1000u32);
     });
 
     let author = Address::generate(&env);
@@ -1485,7 +1517,12 @@ fn test_report_post_uphold_with_slashing() {
     let creator_token = setup_token(&env, &author);
     let token_client = token::Client::new(&env, &creator_token);
     // Author approves the contract to burn their creator tokens for slashing
-    token_client.approve(&author, &contract_id, &1_000, &(env.ledger().sequence() + 1000000));
+    token_client.approve(
+        &author,
+        &contract_id,
+        &1_000,
+        &(env.ledger().sequence() + 1000000),
+    );
 
     // Stake token for the reporter
     let stake_token = setup_token(&env, &reporter);
@@ -1494,11 +1531,16 @@ fn test_report_post_uphold_with_slashing() {
     client.set_profile(&author, &String::from_str(&env, "author"), &creator_token);
     let post_id = client.create_post(&author, &String::from_str(&env, "post to report"));
 
-    // Grant moderator role and create the mods pool
+    // Grant moderator role and create the mods pool. Use a signer distinct
+    // from `moderator` itself: requiring auth twice for the same address in
+    // one invocation (moderator.require_auth() then signer.require_auth())
+    // is rejected by the mock-auth host as "frame is already authorized".
     client.grant_role(&moderator, &moderator, &Role::Moderator);
     let mods = symbol_short!("mods");
-    let signers = soroban_sdk::vec![&env, moderator.clone()];
-    client.create_pool(&moderator, &mods, &stake_token, &signers, &1);
+    let mod_signer = Address::generate(&env);
+    let pool_admins = soroban_sdk::vec![&env, moderator.clone(), mod_signer.clone()];
+    client.create_pool(&moderator, &mods, &stake_token, &pool_admins, &1);
+    let signers = soroban_sdk::vec![&env, mod_signer];
 
     // Report the post with a stake
     let stake_amount: i128 = 500;
@@ -1512,8 +1554,7 @@ fn test_report_post_uphold_with_slashing() {
 
     // Snapshot balances before the review
     let author_balance_before = token_client.balance(&author);
-    let reporter_balance_before =
-        token::Client::new(&env, &stake_token).balance(&reporter);
+    let reporter_balance_before = token::Client::new(&env, &stake_token).balance(&reporter);
     let contract_stake_balance_before =
         token::Client::new(&env, &stake_token).balance(&contract_id);
 
@@ -1524,7 +1565,13 @@ fn test_report_post_uphold_with_slashing() {
     );
 
     // Review and uphold — slashes 10% of author's creator tokens, refunds reporter's stake
-    client.review_report(&moderator, &signers, &post_id, &reporter, &ReportStatus::Upheld);
+    client.review_report(
+        &moderator,
+        &signers,
+        &post_id,
+        &reporter,
+        &ReportStatus::Upheld,
+    );
 
     // Post must be removed
     assert!(
@@ -1542,17 +1589,15 @@ fn test_report_post_uphold_with_slashing() {
     );
 
     // Reporter's stake must be refunded
-    let reporter_balance_after =
-        token::Client::new(&env, &stake_token).balance(&reporter);
+    let reporter_balance_after = token::Client::new(&env, &stake_token).balance(&reporter);
     assert_eq!(
         reporter_balance_after,
-        reporter_balance_before,
+        reporter_balance_before + stake_amount,
         "reporter's stake must be fully refunded when report is upheld"
     );
 
     // Contract no longer holds the stake
-    let contract_stake_balance_after =
-        token::Client::new(&env, &stake_token).balance(&contract_id);
+    let contract_stake_balance_after = token::Client::new(&env, &stake_token).balance(&contract_id);
     assert_eq!(
         contract_stake_balance_after, 0,
         "contract must release the stake after upheld review"
@@ -1586,11 +1631,16 @@ fn test_report_post_dismiss_slashes_reporter() {
     client.set_profile(&author, &String::from_str(&env, "author"), &creator_token);
     let post_id = client.create_post(&author, &String::from_str(&env, "post to report"));
 
-    // Grant moderator role and create the mods pool
+    // Grant moderator role and create the mods pool. Use a signer distinct
+    // from `moderator` itself: requiring auth twice for the same address in
+    // one invocation (moderator.require_auth() then signer.require_auth())
+    // is rejected by the mock-auth host as "frame is already authorized".
     client.grant_role(&moderator, &moderator, &Role::Moderator);
     let mods = symbol_short!("mods");
-    let signers = soroban_sdk::vec![&env, moderator.clone()];
-    client.create_pool(&moderator, &mods, &stake_token, &signers, &1);
+    let mod_signer = Address::generate(&env);
+    let pool_admins = soroban_sdk::vec![&env, moderator.clone(), mod_signer.clone()];
+    client.create_pool(&moderator, &mods, &stake_token, &pool_admins, &1);
+    let signers = soroban_sdk::vec![&env, mod_signer];
 
     // Report the post with a stake
     let stake_amount: i128 = 500;
@@ -1603,13 +1653,17 @@ fn test_report_post_dismiss_slashes_reporter() {
     );
 
     // Snapshot balances before the review
-    let treasury_balance_before =
-        token::Client::new(&env, &stake_token).balance(&treasury);
-    let reporter_balance_before =
-        token::Client::new(&env, &stake_token).balance(&reporter);
+    let treasury_balance_before = token::Client::new(&env, &stake_token).balance(&treasury);
+    let reporter_balance_before = token::Client::new(&env, &stake_token).balance(&reporter);
 
     // Review and dismiss — reporter's stake goes to treasury
-    client.review_report(&moderator, &signers, &post_id, &reporter, &ReportStatus::Dismissed);
+    client.review_report(
+        &moderator,
+        &signers,
+        &post_id,
+        &reporter,
+        &ReportStatus::Dismissed,
+    );
 
     // Post must still exist (dismissed report does not remove the post)
     assert!(
@@ -1618,20 +1672,18 @@ fn test_report_post_dismiss_slashes_reporter() {
     );
 
     // Treasury receives the reporter's stake
-    let treasury_balance_after =
-        token::Client::new(&env, &stake_token).balance(&treasury);
+    let treasury_balance_after = token::Client::new(&env, &stake_token).balance(&treasury);
     assert_eq!(
         treasury_balance_after,
         treasury_balance_before + stake_amount,
         "treasury must receive the reporter's stake when report is dismissed"
     );
 
-    // Reporter loses their stake
-    let reporter_balance_after =
-        token::Client::new(&env, &stake_token).balance(&reporter);
+    // Reporter's stake was already deducted at report_post time and is not
+    // refunded on dismissal (it moves from the contract to the treasury).
+    let reporter_balance_after = token::Client::new(&env, &stake_token).balance(&reporter);
     assert_eq!(
-        reporter_balance_after,
-        reporter_balance_before - stake_amount,
+        reporter_balance_after, reporter_balance_before,
         "reporter's stake must be confiscated when report is dismissed"
     );
 
@@ -1641,6 +1693,7 @@ fn test_report_post_dismiss_slashes_reporter() {
 }
 
 #[test]
+#[should_panic(expected = "already reported")]
 fn test_report_post_already_reported_panics() {
     let env = Env::default();
     env.mock_all_auths();
@@ -1678,6 +1731,7 @@ fn test_report_post_already_reported_panics() {
 }
 
 #[test]
+#[should_panic(expected = "cannot report own post")]
 fn test_report_post_reporter_cannot_report_own_post() {
     let env = Env::default();
     env.mock_all_auths();
@@ -1717,7 +1771,9 @@ fn test_report_post_upheld_without_slashing_when_no_allowance() {
 
     // Set moderation slash to 10%
     env.as_contract(&client.address, || {
-        env.storage().instance().set(&MODERATION_SLASH_BPS, &1000u32);
+        env.storage()
+            .instance()
+            .set(&MODERATION_SLASH_BPS, &1000u32);
     });
 
     let author = Address::generate(&env);
@@ -1727,14 +1783,19 @@ fn test_report_post_upheld_without_slashing_when_no_allowance() {
     let creator_token = setup_token(&env, &author);
     // Intentionally do NOT approve — slash should be gracefully skipped
     let stake_token = setup_token(&env, &reporter);
+    let reporter_balance_before = token::Client::new(&env, &stake_token).balance(&reporter);
 
     client.set_profile(&author, &String::from_str(&env, "author"), &creator_token);
     let post_id = client.create_post(&author, &String::from_str(&env, "graceful skip post"));
 
     client.grant_role(&moderator, &moderator, &Role::Moderator);
     let mods = symbol_short!("mods");
-    let signers = soroban_sdk::vec![&env, moderator.clone()];
-    client.create_pool(&moderator, &mods, &stake_token, &signers, &1);
+    // Use a signer distinct from `moderator`: requiring auth twice for the
+    // same address in one invocation is rejected as "frame is already authorized".
+    let mod_signer = Address::generate(&env);
+    let pool_admins = soroban_sdk::vec![&env, moderator.clone(), mod_signer.clone()];
+    client.create_pool(&moderator, &mods, &stake_token, &pool_admins, &1);
+    let signers = soroban_sdk::vec![&env, mod_signer];
 
     let stake_amount: i128 = 500;
     client.report_post(
@@ -1748,7 +1809,13 @@ fn test_report_post_upheld_without_slashing_when_no_allowance() {
     let author_balance_before = token::Client::new(&env, &creator_token).balance(&author);
 
     // Uphold — slash should be gracefully skipped due to missing allowance
-    client.review_report(&moderator, &signers, &post_id, &reporter, &ReportStatus::Upheld);
+    client.review_report(
+        &moderator,
+        &signers,
+        &post_id,
+        &reporter,
+        &ReportStatus::Upheld,
+    );
 
     // Author's creator tokens must NOT be slashed
     let author_balance_after = token::Client::new(&env, &creator_token).balance(&author);
@@ -1758,10 +1825,9 @@ fn test_report_post_upheld_without_slashing_when_no_allowance() {
     );
 
     // Reporter still gets their stake back
-    let reporter_balance_after =
-        token::Client::new(&env, &stake_token).balance(&reporter);
+    let reporter_balance_after = token::Client::new(&env, &stake_token).balance(&reporter);
     assert_eq!(
-        reporter_balance_after, stake_amount,
+        reporter_balance_after, reporter_balance_before,
         "reporter's stake must still be refunded even when slash is skipped"
     );
 }
@@ -2008,6 +2074,7 @@ fn test_set_fee_non_admin_panics() {
 // ── Username validation tests (issue #195) ───────────────────────────────────────
 
 #[test]
+#[should_panic(expected = "username must be at least 3 characters")]
 fn test_username_too_short() {
     let env = Env::default();
     env.mock_all_auths();
@@ -2016,10 +2083,8 @@ fn test_username_too_short() {
     let user = Address::generate(&env);
     let token = Address::generate(&env);
 
-    // 2-character username is valid (no min length enforcement in contract)
+    // 2-character username is below MIN_NAME_LEN (3) and must be rejected.
     client.set_profile(&user, &String::from_str(&env, "ab"), &token);
-    let profile = client.get_profile(&user).unwrap();
-    assert_eq!(profile.username, String::from_str(&env, "ab"));
 }
 
 #[test]
@@ -2056,7 +2121,7 @@ fn test_username_max_length_valid() {
 }
 
 #[test]
-#[should_panic(expected = "username must be at most 50 characters")]
+#[should_panic(expected = "username must be at most 32 characters")]
 fn test_username_too_long() {
     let env = Env::default();
     env.mock_all_auths();
@@ -2073,6 +2138,9 @@ fn test_username_too_long() {
 }
 
 #[test]
+#[should_panic(
+    expected = "username can only contain alphanumeric characters, underscores, and hyphens"
+)]
 fn test_username_with_space() {
     let env = Env::default();
     env.mock_all_auths();
@@ -2081,13 +2149,14 @@ fn test_username_with_space() {
     let user = Address::generate(&env);
     let token = Address::generate(&env);
 
-    // Username with space is valid (no character validation in contract)
+    // Usernames must be alphanumeric/underscore/hyphen only; a space is rejected.
     client.set_profile(&user, &String::from_str(&env, "user name"), &token);
-    let profile = client.get_profile(&user).unwrap();
-    assert_eq!(profile.username, String::from_str(&env, "user name"));
 }
 
 #[test]
+#[should_panic(
+    expected = "username can only contain alphanumeric characters, underscores, and hyphens"
+)]
 fn test_username_with_special_char() {
     let env = Env::default();
     env.mock_all_auths();
@@ -2096,10 +2165,8 @@ fn test_username_with_special_char() {
     let user = Address::generate(&env);
     let token = Address::generate(&env);
 
-    // Username with special character is valid (no character validation in contract)
+    // Usernames must be alphanumeric/underscore/hyphen only; '@' is rejected.
     client.set_profile(&user, &String::from_str(&env, "user@name"), &token);
-    let profile = client.get_profile(&user).unwrap();
-    assert_eq!(profile.username, String::from_str(&env, "user@name"));
 }
 
 // ── Unfollow event emission tests (issue #129) ───────────────────────────────────
@@ -2184,6 +2251,7 @@ fn test_unfollow_nonexistent_relationship_is_noop_emits_event_counts_stay_zero()
 // ── Post content length validation tests (issue #194) ────────────────────────────
 
 #[test]
+#[should_panic(expected = "content cannot be empty")]
 fn test_post_content_empty() {
     let env = Env::default();
     env.mock_all_auths();
@@ -2191,10 +2259,8 @@ fn test_post_content_empty() {
 
     let author = Address::generate(&env);
 
-    // Empty content is valid (only max length is enforced)
-    let post_id = client.create_post(&author, &String::from_str(&env, ""));
-    let post = client.get_post(&post_id).unwrap();
-    assert_eq!(post.content, String::from_str(&env, ""));
+    // Empty content is rejected.
+    client.create_post(&author, &String::from_str(&env, ""));
 }
 
 #[test]
@@ -2229,7 +2295,7 @@ fn test_post_content_max_length_valid() {
 }
 
 #[test]
-#[should_panic(expected = "content must be at most 2000 characters")]
+#[should_panic(expected = "content must be at most 280 characters")]
 fn test_post_content_too_long() {
     let env = Env::default();
     env.mock_all_auths();
@@ -2491,20 +2557,18 @@ fn test_create_post_content_280_chars_succeeds() {
 }
 
 #[test]
+#[should_panic(expected = "content cannot be empty")]
 fn test_create_post_empty_content_panics() {
-    // empty content is valid (only max length is enforced in contract)
     let env = Env::default();
     env.mock_all_auths();
     let (client, _, _) = setup_contract(&env);
 
     let author = Address::generate(&env);
-    let post_id = client.create_post(&author, &String::from_str(&env, ""));
-    let post = client.get_post(&post_id).unwrap();
-    assert_eq!(post.content, String::from_str(&env, ""));
+    client.create_post(&author, &String::from_str(&env, ""));
 }
 
 #[test]
-#[should_panic(expected = "content must be at most 2000 characters")]
+#[should_panic(expected = "content must be at most 280 characters")]
 fn test_create_post_content_281_chars_panics() {
     // content of 2001 characters must panic with a descriptive error
     let env = Env::default();
@@ -3875,7 +3939,7 @@ fn setup_governance_with_pool(
 fn test_gov_happy_path_propose_vote_execute() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _admin, _) = setup_governance(&env);
+    let (client, admin, _) = setup_governance(&env);
 
     let proposer = Address::generate(&env);
     let proposal_id = client.gov_propose(&proposer, &GovParameter::FeeBps, &500, &None);
@@ -3895,7 +3959,7 @@ fn test_gov_happy_path_propose_vote_execute() {
         li.sequence_number += 200 + 100;
     });
 
-    client.gov_execute(&proposal_id);
+    client.gov_execute(&admin, &proposal_id);
 
     assert_eq!(client.get_fee_bps(), 500);
     let executed = client.gov_get_proposal(&proposal_id);
@@ -3945,7 +4009,7 @@ fn test_gov_quorum_decay_proposal_fails_below_floor() {
     let env = Env::default();
     env.mock_all_auths();
     // setup_governance uses: quorum=60, time_lock=100, vote_window=200, decay=50, floor=30
-    let (client, _admin, _) = setup_governance(&env);
+    let (client, admin, _) = setup_governance(&env);
 
     let proposer = Address::generate(&env);
     let proposal_id = client.gov_propose(&proposer, &GovParameter::FeeBps, &100, &None);
@@ -3968,7 +4032,7 @@ fn test_gov_quorum_decay_proposal_fails_below_floor() {
     });
 
     // effective_quorum decays to floor=30; 20% < 30% → must panic "quorum not met"
-    client.gov_execute(&proposal_id);
+    client.gov_execute(&admin, &proposal_id);
 }
 
 #[test]
@@ -3976,7 +4040,7 @@ fn test_gov_quorum_decay_proposal_fails_below_floor() {
 fn test_gov_quorum_not_met_fails() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _admin, _) = setup_governance(&env);
+    let (client, admin, _) = setup_governance(&env);
 
     let proposer = Address::generate(&env);
     let proposal_id = client.gov_propose(&proposer, &GovParameter::FeeBps, &100, &None);
@@ -3998,7 +4062,7 @@ fn test_gov_quorum_not_met_fails() {
     });
 
     // 20% < 30% (floor) → quorum not met
-    client.gov_execute(&proposal_id);
+    client.gov_execute(&admin, &proposal_id);
 }
 
 #[test]
@@ -4038,7 +4102,7 @@ fn test_gov_quorum_decay_allows_passage() {
     assert_eq!(eff_q, 30, "effective quorum should decay to floor");
 
     // 35% >= 30% → passes with decay
-    client.gov_execute(&proposal_id);
+    client.gov_execute(&admin, &proposal_id);
     assert_eq!(client.get_fee_bps(), 200);
 }
 
@@ -4072,7 +4136,7 @@ fn test_gov_veto_during_timelock() {
 fn test_gov_veto_prevents_execution() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _admin, _, pool_id, pool_admins) = setup_governance_with_pool(&env);
+    let (client, admin, _, pool_id, pool_admins) = setup_governance_with_pool(&env);
 
     let proposer = Address::generate(&env);
     let proposal_id = client.gov_propose(&proposer, &GovParameter::FeeBps, &500, &None);
@@ -4093,7 +4157,7 @@ fn test_gov_veto_prevents_execution() {
     });
 
     // Should panic because proposal is vetoed (status != Active)
-    client.gov_execute(&proposal_id);
+    client.gov_execute(&admin, &proposal_id);
 }
 
 #[test]
@@ -4337,7 +4401,7 @@ fn test_follow_unfollow_refollow_consistency() {
 fn test_gov_execute_before_timelock_fails() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _admin, _) = setup_governance(&env);
+    let (client, admin, _) = setup_governance(&env);
 
     let proposer = Address::generate(&env);
     let proposal_id = client.gov_propose(&proposer, &GovParameter::FeeBps, &500, &None);
@@ -4350,7 +4414,7 @@ fn test_gov_execute_before_timelock_fails() {
         li.sequence_number += 210;
     });
 
-    client.gov_execute(&proposal_id);
+    client.gov_execute(&admin, &proposal_id);
 }
 
 #[test]
@@ -4375,7 +4439,7 @@ fn test_gov_vote_after_window_panics() {
 fn test_gov_tip_cooldown_parameter_change() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _admin, _) = setup_governance(&env);
+    let (client, admin, _) = setup_governance(&env);
 
     let proposer = Address::generate(&env);
     let proposal_id = client.gov_propose(&proposer, &GovParameter::TipCooldownWindow, &5000, &None);
@@ -4387,7 +4451,7 @@ fn test_gov_tip_cooldown_parameter_change() {
         li.sequence_number += 300;
     });
 
-    client.gov_execute(&proposal_id);
+    client.gov_execute(&admin, &proposal_id);
     assert_eq!(client.get_tip_cooldown_window(), 5000);
 }
 
@@ -4480,7 +4544,7 @@ fn test_gov_effective_quorum_at_creation() {
 fn test_gov_change_gov_quorum_via_governance() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _admin, _) = setup_governance(&env);
+    let (client, admin, _) = setup_governance(&env);
 
     let proposer = Address::generate(&env);
     let proposal_id = client.gov_propose(&proposer, &GovParameter::GovQuorum, &50, &None);
@@ -4492,7 +4556,7 @@ fn test_gov_change_gov_quorum_via_governance() {
         li.sequence_number += 300;
     });
 
-    client.gov_execute(&proposal_id);
+    client.gov_execute(&admin, &proposal_id);
 
     let config = client.gov_get_config();
     assert_eq!(config.quorum, 50);
@@ -4521,7 +4585,7 @@ fn test_gov_multiple_proposals() {
 fn test_gov_treasury_change_via_governance() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _admin, _) = setup_governance(&env);
+    let (client, admin, _) = setup_governance(&env);
 
     let new_treasury = Address::generate(&env);
     let proposer = Address::generate(&env);
@@ -4539,7 +4603,7 @@ fn test_gov_treasury_change_via_governance() {
         li.sequence_number += 300;
     });
 
-    client.gov_execute(&proposal_id);
+    client.gov_execute(&admin, &proposal_id);
     assert_eq!(client.get_treasury(), Some(new_treasury));
 }
 
@@ -4753,8 +4817,8 @@ fn test_gov_snapshot_two_proposals_different_configs() {
     });
 
     // Both should execute using their respective snapshots
-    client.gov_execute(&proposal_id_1);
-    client.gov_execute(&proposal_id_2);
+    client.gov_execute(&admin, &proposal_id_1);
+    client.gov_execute(&admin, &proposal_id_2);
 
     let p1_exec = client.gov_get_proposal(&proposal_id_1);
     let p2_exec = client.gov_get_proposal(&proposal_id_2);
@@ -4826,7 +4890,7 @@ fn test_create_post_280_chars_boundary_succeeds() {
 }
 
 #[test]
-#[should_panic(expected = "content must be at most 2000 characters")]
+#[should_panic(expected = "content must be at most 280 characters")]
 fn test_create_post_281_chars_boundary_panics() {
     let env = Env::default();
     env.mock_all_auths();
@@ -5197,7 +5261,7 @@ fn test_get_followers_large_offset_no_panic() {
 // ── Issue #717: verify username of 33 characters is rejected ─────────────────
 
 #[test]
-#[should_panic(expected = "username must be at most 50 characters")]
+#[should_panic(expected = "username must be at most 32 characters")]
 fn test_717_set_profile_username_33_chars_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -6575,9 +6639,6 @@ fn pay_rent_transfers_tokens_to_treasury() {
 
     let token_client = TokenClient::new(&env, &token);
 
-    let treasury_before = token_client.balance(&treasury);
-    let user_before = token_client.balance(&user);
-
     let amount = 1_000_000_000i128;
 
     StellarAssetClient::new(&env, &token).mint(&user, &amount);
@@ -6814,7 +6875,7 @@ fn test_delete_profile_with_large_graphs() {
         let follower = Address::generate(&env);
         client.set_profile(
             &follower,
-            &String::from_str(&env, &format!("f{}", i)),
+            &String::from_str(&env, &format!("follower{}", i)),
             &Address::generate(&env),
         );
         client.follow(&follower, &user);
@@ -7215,12 +7276,18 @@ fn test_batch_cleanup_post_chunked_works() {
 fn test_update_credential_root_persists() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
+    let (client, admin, _) = setup_contract(&env);
+    let signing_key = credential_authority_signing_key(1);
+    client.set_credential_authority(&admin, &credential_authority_pubkey(&env, &signing_key));
 
     let user = Address::generate(&env);
     let root = BytesN::from_array(&env, &[1u8; 32]);
 
-    client.update_credential_root(&user, &root);
+    client.update_credential_root(
+        &user,
+        &root,
+        &sign_credential_root(&env, &signing_key, &root),
+    );
 
     let retrieved = client.get_credential_root(&user);
     assert!(retrieved.is_some());
@@ -7231,16 +7298,30 @@ fn test_update_credential_root_persists() {
 fn test_update_credential_root_multiple_updates() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
+    let (client, admin, _) = setup_contract(&env);
+    let signing_key = credential_authority_signing_key(1);
+    client.set_credential_authority(&admin, &credential_authority_pubkey(&env, &signing_key));
 
     let user = Address::generate(&env);
     let root1 = BytesN::from_array(&env, &[1u8; 32]);
     let root2 = BytesN::from_array(&env, &[2u8; 32]);
     let root3 = BytesN::from_array(&env, &[3u8; 32]);
 
-    client.update_credential_root(&user, &root1);
-    client.update_credential_root(&user, &root2);
-    client.update_credential_root(&user, &root3);
+    client.update_credential_root(
+        &user,
+        &root1,
+        &sign_credential_root(&env, &signing_key, &root1),
+    );
+    client.update_credential_root(
+        &user,
+        &root2,
+        &sign_credential_root(&env, &signing_key, &root2),
+    );
+    client.update_credential_root(
+        &user,
+        &root3,
+        &sign_credential_root(&env, &signing_key, &root3),
+    );
 
     let retrieved = client.get_credential_root(&user).unwrap();
     assert_eq!(retrieved, root3, "latest value should be stored");
@@ -7250,15 +7331,25 @@ fn test_update_credential_root_multiple_updates() {
 fn test_update_credential_root_independent_users() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
+    let (client, admin, _) = setup_contract(&env);
+    let signing_key = credential_authority_signing_key(1);
+    client.set_credential_authority(&admin, &credential_authority_pubkey(&env, &signing_key));
 
     let user1 = Address::generate(&env);
     let user2 = Address::generate(&env);
     let root1 = BytesN::from_array(&env, &[1u8; 32]);
     let root2 = BytesN::from_array(&env, &[2u8; 32]);
 
-    client.update_credential_root(&user1, &root1);
-    client.update_credential_root(&user2, &root2);
+    client.update_credential_root(
+        &user1,
+        &root1,
+        &sign_credential_root(&env, &signing_key, &root1),
+    );
+    client.update_credential_root(
+        &user2,
+        &root2,
+        &sign_credential_root(&env, &signing_key, &root2),
+    );
 
     assert_eq!(client.get_credential_root(&user1).unwrap(), root1);
     assert_eq!(client.get_credential_root(&user2).unwrap(), root2);
@@ -7283,7 +7374,9 @@ fn test_get_credential_root_none_when_not_set() {
 fn test_verify_credential_valid_proof() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
+    let (client, admin, _) = setup_contract(&env);
+    let signing_key = credential_authority_signing_key(1);
+    client.set_credential_authority(&admin, &credential_authority_pubkey(&env, &signing_key));
 
     let user = Address::generate(&env);
 
@@ -7295,10 +7388,14 @@ fn test_verify_credential_valid_proof() {
     // Compute the expected root (hash of leaf with empty proof = leaf itself)
     let root = leaf.clone();
 
-    client.update_credential_root(&user, &root);
+    client.update_credential_root(
+        &user,
+        &root,
+        &sign_credential_root(&env, &signing_key, &root),
+    );
 
     let nullifier = BytesN::from_array(&env, &[10u8; 32]);
-    let result = client.verify_credential(&user, &leaf, &proof, &nullifier);
+    let result = client.verify_credential(&user, &proof, &leaf, &nullifier);
 
     assert!(result, "valid proof should return true");
 }
@@ -7307,7 +7404,9 @@ fn test_verify_credential_valid_proof() {
 fn test_verify_credential_invalid_proof_wrong_leaf() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
+    let (client, admin, _) = setup_contract(&env);
+    let signing_key = credential_authority_signing_key(1);
+    client.set_credential_authority(&admin, &credential_authority_pubkey(&env, &signing_key));
 
     let user = Address::generate(&env);
 
@@ -7315,10 +7414,14 @@ fn test_verify_credential_invalid_proof_wrong_leaf() {
     let wrong_leaf = BytesN::from_array(&env, &[2u8; 32]);
     let proof: Vec<BytesN<32>> = vec![&env];
 
-    client.update_credential_root(&user, &root);
+    client.update_credential_root(
+        &user,
+        &root,
+        &sign_credential_root(&env, &signing_key, &root),
+    );
 
     let nullifier = BytesN::from_array(&env, &[10u8; 32]);
-    let result = client.verify_credential(&user, &wrong_leaf, &proof, &nullifier);
+    let result = client.verify_credential(&user, &proof, &wrong_leaf, &nullifier);
 
     assert!(!result, "invalid proof with wrong leaf should return false");
 }
@@ -7327,7 +7430,9 @@ fn test_verify_credential_invalid_proof_wrong_leaf() {
 fn test_verify_credential_invalid_proof_wrong_path() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
+    let (client, admin, _) = setup_contract(&env);
+    let signing_key = credential_authority_signing_key(1);
+    client.set_credential_authority(&admin, &credential_authority_pubkey(&env, &signing_key));
 
     let user = Address::generate(&env);
 
@@ -7336,16 +7441,19 @@ fn test_verify_credential_invalid_proof_wrong_path() {
     let wrong_sibling = BytesN::from_array(&env, &[99u8; 32]);
     let proof = vec![&env, wrong_sibling];
 
-    client.update_credential_root(&user, &root);
+    client.update_credential_root(
+        &user,
+        &root,
+        &sign_credential_root(&env, &signing_key, &root),
+    );
 
     let nullifier = BytesN::from_array(&env, &[10u8; 32]);
-    let result = client.verify_credential(&user, &leaf, &proof, &nullifier);
+    let result = client.verify_credential(&user, &proof, &leaf, &nullifier);
 
     assert!(!result, "invalid proof with wrong path should return false");
 }
 
 #[test]
-#[should_panic(expected = "no credential root set")]
 fn test_verify_credential_panics_no_root() {
     let env = Env::default();
     env.mock_all_auths();
@@ -7356,16 +7464,18 @@ fn test_verify_credential_panics_no_root() {
     let proof: Vec<BytesN<32>> = vec![&env];
     let nullifier = BytesN::from_array(&env, &[10u8; 32]);
 
-    // Try to verify without setting a root
-    client.verify_credential(&user, &leaf, &proof, &nullifier);
+    // Verifying without setting a root returns false rather than panicking.
+    let result = client.verify_credential(&user, &proof, &leaf, &nullifier);
+    assert!(!result, "verification without a root should return false");
 }
 
 #[test]
-#[should_panic(expected = "nullifier already used")]
 fn test_verify_credential_nullifier_replay_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
+    let (client, admin, _) = setup_contract(&env);
+    let signing_key = credential_authority_signing_key(1);
+    client.set_credential_authority(&admin, &credential_authority_pubkey(&env, &signing_key));
 
     let user = Address::generate(&env);
 
@@ -7374,21 +7484,28 @@ fn test_verify_credential_nullifier_replay_rejected() {
     let proof: Vec<BytesN<32>> = vec![&env];
     let nullifier = BytesN::from_array(&env, &[10u8; 32]);
 
-    client.update_credential_root(&user, &root);
+    client.update_credential_root(
+        &user,
+        &root,
+        &sign_credential_root(&env, &signing_key, &root),
+    );
 
     // First verification should succeed
-    let result1 = client.verify_credential(&user, &leaf, &proof, &nullifier);
+    let result1 = client.verify_credential(&user, &proof, &leaf, &nullifier);
     assert!(result1);
 
-    // Second verification with same nullifier should panic
-    client.verify_credential(&user, &leaf, &proof, &nullifier);
+    // Second verification with the same nullifier returns false rather than panicking.
+    let result2 = client.verify_credential(&user, &proof, &leaf, &nullifier);
+    assert!(!result2, "replayed nullifier should return false");
 }
 
 #[test]
 fn test_verify_credential_different_nullifiers_accepted() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
+    let (client, admin, _) = setup_contract(&env);
+    let signing_key = credential_authority_signing_key(1);
+    client.set_credential_authority(&admin, &credential_authority_pubkey(&env, &signing_key));
 
     let user = Address::generate(&env);
 
@@ -7398,13 +7515,17 @@ fn test_verify_credential_different_nullifiers_accepted() {
     let nullifier1 = BytesN::from_array(&env, &[10u8; 32]);
     let nullifier2 = BytesN::from_array(&env, &[20u8; 32]);
 
-    client.update_credential_root(&user, &root);
+    client.update_credential_root(
+        &user,
+        &root,
+        &sign_credential_root(&env, &signing_key, &root),
+    );
 
     // Both verifications with different nullifiers should succeed
-    let result1 = client.verify_credential(&user, &leaf, &proof, &nullifier1);
+    let result1 = client.verify_credential(&user, &proof, &leaf, &nullifier1);
     assert!(result1);
 
-    let result2 = client.verify_credential(&user, &leaf, &proof, &nullifier2);
+    let result2 = client.verify_credential(&user, &proof, &leaf, &nullifier2);
     assert!(result2);
 }
 
@@ -7412,7 +7533,9 @@ fn test_verify_credential_different_nullifiers_accepted() {
 fn test_verify_credential_empty_proof() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
+    let (client, admin, _) = setup_contract(&env);
+    let signing_key = credential_authority_signing_key(1);
+    client.set_credential_authority(&admin, &credential_authority_pubkey(&env, &signing_key));
 
     let user = Address::generate(&env);
 
@@ -7421,10 +7544,14 @@ fn test_verify_credential_empty_proof() {
     let root = leaf.clone();
     let proof: Vec<BytesN<32>> = vec![&env];
 
-    client.update_credential_root(&user, &root);
+    client.update_credential_root(
+        &user,
+        &root,
+        &sign_credential_root(&env, &signing_key, &root),
+    );
 
     let nullifier = BytesN::from_array(&env, &[10u8; 32]);
-    let result = client.verify_credential(&user, &leaf, &proof, &nullifier);
+    let result = client.verify_credential(&user, &proof, &leaf, &nullifier);
 
     assert!(result, "empty proof should work when root equals leaf");
 }
@@ -7433,7 +7560,9 @@ fn test_verify_credential_empty_proof() {
 fn test_verify_credential_max_depth_proof() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
+    let (client, admin, _) = setup_contract(&env);
+    let signing_key = credential_authority_signing_key(1);
+    client.set_credential_authority(&admin, &credential_authority_pubkey(&env, &signing_key));
 
     let user = Address::generate(&env);
 
@@ -7442,45 +7571,19 @@ fn test_verify_credential_max_depth_proof() {
     let sibling1 = BytesN::from_array(&env, &[2u8; 32]);
     let sibling2 = BytesN::from_array(&env, &[3u8; 32]);
     let sibling3 = BytesN::from_array(&env, &[4u8; 32]);
-    let proof = vec![&env, sibling1.clone(), sibling2.clone(), sibling3.clone()];
+    let proof = vec![&env, sibling1, sibling2, sibling3];
 
-    // Compute the expected root using position-dependent hash
-    let mut current = leaf.clone();
-    let mut index = 0u8;
+    // Compute the expected root by mirroring the contract's ordered-pair sha256 hash.
+    let root = merkle_root_from_proof(&env, &leaf, &proof);
 
-    // Add sibling1 with index 0
-    let mut result1 = [0u8; 32];
-    let current_arr = current.to_array();
-    let s1_arr = sibling1.clone().to_array();
-    for i in 0..32 {
-        result1[i] = current_arr[i].wrapping_add(s1_arr[i]).wrapping_add(index);
-    }
-    current = BytesN::from_array(&env, &result1);
-    index = index.wrapping_add(1);
-
-    // Add sibling2 with index 1
-    let mut result2 = [0u8; 32];
-    let current_arr2 = current.to_array();
-    let s2_arr = sibling2.clone().to_array();
-    for i in 0..32 {
-        result2[i] = current_arr2[i].wrapping_add(s2_arr[i]).wrapping_add(index);
-    }
-    current = BytesN::from_array(&env, &result2);
-    index = index.wrapping_add(1);
-
-    // Add sibling3 with index 2
-    let mut result3 = [0u8; 32];
-    let current_arr3 = current.to_array();
-    let s3_arr = sibling3.clone().to_array();
-    for i in 0..32 {
-        result3[i] = current_arr3[i].wrapping_add(s3_arr[i]).wrapping_add(index);
-    }
-    let root = BytesN::from_array(&env, &result3);
-
-    client.update_credential_root(&user, &root);
+    client.update_credential_root(
+        &user,
+        &root,
+        &sign_credential_root(&env, &signing_key, &root),
+    );
 
     let nullifier = BytesN::from_array(&env, &[10u8; 32]);
-    let result = client.verify_credential(&user, &leaf, &proof, &nullifier);
+    let result = client.verify_credential(&user, &proof, &leaf, &nullifier);
 
     assert!(result, "max depth proof should verify correctly");
 }
@@ -7554,12 +7657,7 @@ fn test_gov_propose_treasury_zero_address() {
         &env,
         "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
     );
-    client.gov_propose(
-        &proposer,
-        &GovParameter::Treasury,
-        &0,
-        &Some(zero_address),
-    );
+    client.gov_propose(&proposer, &GovParameter::Treasury, &0, &Some(zero_address));
 }
 
 #[test]
