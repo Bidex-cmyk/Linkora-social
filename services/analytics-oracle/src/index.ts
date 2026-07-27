@@ -153,6 +153,7 @@ const startTime = Date.now();
 
 let started = false;
 let startedAt: string | null = null;
+let shuttingDown = false;
 
 function markStarted(): void {
   if (started) return;
@@ -180,6 +181,7 @@ app.use(
     startTime,
     isStarted: () => started,
     startedAt: () => startedAt,
+    isShuttingDown: () => shuttingDown,
   })
 );
 
@@ -261,10 +263,21 @@ async function main(): Promise<void> {
   // Initialise rate limiter (upgrades to Redis store when REDIS_URL is set).
   await initRateLimiter();
 
-  app.listen(PORT, () => {
+  const httpServer = app.listen(PORT, () => {
     logger.info({ port: PORT }, "Oracle API listening");
     markStarted();
   });
+
+  function gracefulShutdown(signal: string): void {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info({ signal }, "Oracle shutting down — failing readiness probe");
+    httpServer.close(() => process.exit(0));
+    // Force-exit if connections don't drain in time.
+    setTimeout(() => process.exit(1), 10_000).unref();
+  }
+  process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+  process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
   const pollMs = Number(WINDOW_LEDGERS) * 5_000;
   logger.info({ pollIntervalMs: pollMs }, "Oracle polling interval set");
