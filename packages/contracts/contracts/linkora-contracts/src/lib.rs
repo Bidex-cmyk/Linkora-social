@@ -6,9 +6,6 @@ use soroban_sdk::{
     BytesN, Env, Map, String, Symbol, Vec,
 };
 
-#[cfg(test)]
-use soroban_sdk::testutils::storage::Persistent as _;
-
 mod errors;
 mod validation;
 
@@ -148,25 +145,6 @@ pub struct ContractState {
     pub version: u32,
     /// Last known implementation hash. Updated on each successful upgrade.
     pub implementation_wasm_hash: Option<BytesN<32>>,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ProposalStatus {
-    Pending,
-    Executed,
-}
-
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct Proposal {
-    pub id: u64,
-    pub pool_id: Symbol,
-    pub proposer: Address,
-    pub amount: i128,
-    pub recipient: Address,
-    pub signers: Vec<Address>,
-    pub status: ProposalStatus,
 }
 
 // ── Governance Types ─────────────────────────────────────────────────────────
@@ -407,39 +385,6 @@ pub struct ProfileDeletedEvent {
 
 #[contractevent]
 #[derive(Clone)]
-pub struct ProposalCreatedEvent {
-    #[topic]
-    pub pool_id: Symbol,
-    #[topic]
-    pub proposal_id: u64,
-    pub proposer: Address,
-    pub amount: i128,
-    pub recipient: Address,
-}
-
-#[contractevent]
-#[derive(Clone)]
-pub struct ProposalSignedEvent {
-    #[topic]
-    pub pool_id: Symbol,
-    #[topic]
-    pub proposal_id: u64,
-    pub signer: Address,
-}
-
-#[contractevent]
-#[derive(Clone)]
-pub struct ProposalExecutedEvent {
-    #[topic]
-    pub pool_id: Symbol,
-    #[topic]
-    pub proposal_id: u64,
-    pub amount: i128,
-    pub recipient: Address,
-}
-
-#[contractevent]
-#[derive(Clone)]
 pub struct PoolAdminAddedEvent {
     #[topic]
     pub pool_id: Symbol,
@@ -607,6 +552,60 @@ pub struct ReportDismissedEvent {
     pub post_id: u64,
     #[topic]
     pub reporter: Address,
+}
+
+// ── Issue #946: missing events for batch ops and admin functions ──────────────
+
+#[contractevent]
+#[derive(Clone)]
+pub struct BatchCleanupProfileEvent {
+    #[topic]
+    pub user: Address,
+    pub cleaned_entries: u32,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct BatchCleanupPostEvent {
+    #[topic]
+    pub post_id: u64,
+    pub cleaned_entries: u32,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct FollowGraphMigratedEvent {
+    #[topic]
+    pub admin: Address,
+    pub users_migrated: u32,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct BatchBumpEvent {
+    #[topic]
+    pub admin: Address,
+    #[topic]
+    pub user: Address,
+    pub keys_bumped: u32,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct TipCooldownUpdatedEvent {
+    #[topic]
+    pub admin: Address,
+    pub old_value: u32,
+    pub new_value: u32,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct RentRateUpdatedEvent {
+    #[topic]
+    pub admin: Address,
+    pub old_value: u32,
+    pub new_value: u32,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -874,16 +873,6 @@ impl LinkoraContract {
     pub fn get_profile(env: Env, user: Address) -> Option<Profile> {
         validate_non_default_address(&env, "user", &user);
         let key = StorageKey::Profile(user.clone());
-        #[cfg(test)]
-        let exists = {
-            if env.storage().persistent().has(&key) {
-                let ttl = env.storage().persistent().get_ttl(&key);
-                ttl > 0 && ttl <= 10_000_000
-            } else {
-                false
-            }
-        };
-        #[cfg(not(test))]
         let exists = env.storage().persistent().has(&key);
         if exists {
             let profile: Profile = env.storage().persistent().get(&key).unwrap();
@@ -1099,6 +1088,12 @@ impl LinkoraContract {
         if f_count == 0 && following_count == 0 && author_posts.is_empty() {
             env.storage().persistent().remove(&tombstone_key);
         }
+
+        BatchCleanupProfileEvent {
+            user,
+            cleaned_entries: entries_removed,
+        }
+        .publish(&env);
     }
 
     /// Resolves a username to its owner address.
@@ -1315,16 +1310,6 @@ impl LinkoraContract {
         let check_expired = |k: &StorageKey| {
             if !env.storage().persistent().has(k) {
                 panic!("graph entry expired - pay rent");
-            }
-            #[cfg(test)]
-            {
-                let mut ttl = env.storage().persistent().get_ttl(k);
-                if ttl > 10_000_000 {
-                    ttl = 0;
-                }
-                if ttl <= LEDGER_THRESHOLD {
-                    panic!("graph entry expired - pay rent");
-                }
             }
         };
 
@@ -1603,6 +1588,7 @@ impl LinkoraContract {
             "batch size must not exceed 50 users"
         );
 
+        let mut users_migrated: u32 = 0;
         for user in users.iter() {
             let migrated_key = StorageKey::GraphMigrated(user.clone());
             if env.storage().persistent().has(&migrated_key) {
@@ -1719,7 +1705,14 @@ impl LinkoraContract {
             // Mark user as migrated
             env.storage().persistent().set(&migrated_key, &true);
             Self::bump(&env, &migrated_key);
+            users_migrated += 1;
         }
+
+        FollowGraphMigratedEvent {
+            admin,
+            users_migrated,
+        }
+        .publish(&env);
     }
 
     // ── Block List ────────────────────────────────────────────────────────────
@@ -2049,6 +2042,12 @@ impl LinkoraContract {
         if likes_count == 0 && reports_count == 0 && tc_count == 0 {
             env.storage().persistent().remove(&tombstone_key);
         }
+
+        BatchCleanupPostEvent {
+            post_id,
+            cleaned_entries: entries_removed,
+        }
+        .publish(&env);
     }
 
     /// Returns a paginated list of post IDs authored by the given address.
@@ -2765,9 +2764,21 @@ impl LinkoraContract {
         Self::require_role(&env, &admin, Role::Admin);
         validate_u32_range(&env, "cooldown_ledgers", cooldown_ledgers, 1, u32::MAX);
         Self::require_not_paused(&env);
+        let old_value: u32 = env
+            .storage()
+            .instance()
+            .get(&TIP_COOLDOWN_WINDOW)
+            .unwrap_or(1u32);
         env.storage()
             .instance()
             .set(&TIP_COOLDOWN_WINDOW, &cooldown_ledgers);
+
+        TipCooldownUpdatedEvent {
+            admin,
+            old_value,
+            new_value: cooldown_ledgers,
+        }
+        .publish(&env);
     }
 
     /// Returns the current tip cooldown window in ledgers.
@@ -3105,7 +3116,7 @@ impl LinkoraContract {
     /// * Panics if proposal is not active
     /// * Panics if time-lock has not expired
     /// * Panics if quorum is not met
-    pub fn gov_execute(env: Env, proposal_id: u64) {
+    pub fn gov_execute(env: Env, admin: Address, proposal_id: u64) {
         Self::bump_instance(&env);
         admin.require_auth();
         validate_non_default_address(&env, "admin", &admin);
@@ -3475,21 +3486,10 @@ impl LinkoraContract {
         let keys = Self::get_user_keys(&env, &user);
         for key in keys.iter() {
             if env.storage().persistent().has(&key) {
-                #[cfg(test)]
-                {
-                    let current_ttl = env.storage().persistent().get_ttl(&key);
-                    let new_ttl = current_ttl.saturating_add(ledgers_to_extend as u32);
-                    env.storage()
-                        .persistent()
-                        .extend_ttl(&key, new_ttl, new_ttl);
-                }
-                #[cfg(not(test))]
-                {
-                    let target_ttl = LEDGER_BUMP.saturating_add(ledgers_to_extend as u32);
-                    env.storage()
-                        .persistent()
-                        .extend_ttl(&key, target_ttl, target_ttl);
-                }
+                let target_ttl = LEDGER_BUMP.saturating_add(ledgers_to_extend as u32);
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&key, target_ttl, target_ttl);
             }
         }
 
@@ -3594,39 +3594,11 @@ impl LinkoraContract {
     /// * Panics if profile does not exist
     pub fn get_rent_expiry(env: Env, user: Address) -> u32 {
         validate_non_default_address(&env, "user", &user);
-        #[cfg(test)]
-        {
-            let keys = Self::get_user_keys(&env, &user);
-            let mut min_ttl = u32::MAX;
-            let mut has_keys = false;
-
-            for key in keys.iter() {
-                if env.storage().persistent().has(&key) {
-                    let mut ttl = env.storage().persistent().get_ttl(&key);
-                    if ttl > 10_000_000 {
-                        ttl = 0;
-                    }
-                    if ttl < min_ttl {
-                        min_ttl = ttl;
-                        has_keys = true;
-                    }
-                }
-            }
-
-            if !has_keys {
-                panic!("profile does not exist");
-            }
-
-            env.ledger().sequence().saturating_add(min_ttl)
+        let profile_key = StorageKey::Profile(user);
+        if !env.storage().persistent().has(&profile_key) {
+            panic!("profile does not exist");
         }
-        #[cfg(not(test))]
-        {
-            let profile_key = StorageKey::Profile(user);
-            if !env.storage().persistent().has(&profile_key) {
-                panic!("profile does not exist");
-            }
-            env.ledger().sequence().saturating_add(LEDGER_BUMP)
-        }
+        env.ledger().sequence().saturating_add(LEDGER_BUMP)
     }
 
     /// Sets the rent rate in basis points. Requires Admin role.
@@ -3642,7 +3614,19 @@ impl LinkoraContract {
         validate_non_default_address(&env, "admin", &admin);
         Self::require_role(&env, &admin, Role::Admin);
         validate_u32_range(&env, "rate", rate, 1, MAX_FEE_BPS);
+        let old_value: u32 = env
+            .storage()
+            .instance()
+            .get(&RENT_RATE_BPS_KEY)
+            .unwrap_or(100);
         env.storage().instance().set(&RENT_RATE_BPS_KEY, &rate);
+
+        RentRateUpdatedEvent {
+            admin,
+            old_value,
+            new_value: rate,
+        }
+        .publish(&env);
     }
 
     /// Returns the current rent rate in basis points. Defaults to 100.
@@ -3675,24 +3659,18 @@ impl LinkoraContract {
                 break;
             }
             if env.storage().persistent().has(&key) {
-                #[cfg(test)]
-                {
-                    let mut ttl = env.storage().persistent().get_ttl(&key);
-                    if ttl > 10_000_000 {
-                        ttl = 0;
-                    }
-                    if ttl <= LEDGER_THRESHOLD {
-                        Self::bump(&env, &key);
-                        bumped += 1;
-                    }
-                }
-                #[cfg(not(test))]
-                {
-                    Self::bump(&env, &key);
-                    bumped += 1;
-                }
+                Self::bump(&env, &key);
+                bumped += 1;
             }
         }
+
+        BatchBumpEvent {
+            admin,
+            user,
+            keys_bumped: bumped,
+        }
+        .publish(&env);
+
         bumped
     }
 
