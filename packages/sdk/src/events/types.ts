@@ -1,4 +1,5 @@
 import { scValToNative, xdr } from "@stellar/stellar-base";
+import type { GovParameter } from "../generated/types.js";
 
 export interface SorobanEvent {
   type?: string;
@@ -23,15 +24,6 @@ export interface LinkoraEventMeta {
   txHash?: string;
   raw: SorobanEvent;
 }
-
-export type GovParameter =
-  | "FeeBps"
-  | "Treasury"
-  | "TipCooldownWindow"
-  | "GovQuorum"
-  | "GovTimeLock"
-  | "GovVoteWindow"
-  | string;
 
 interface BaseLinkoraEvent {
   meta: LinkoraEventMeta;
@@ -670,7 +662,7 @@ export function parseContractEvent(raw: SorobanEvent): LinkoraEvent | null {
           type: eventType,
           proposal_id: num(payload.proposal_id),
           proposer: str(payload.proposer),
-          parameter: str(payload.parameter),
+          parameter: str(payload.parameter) as GovParameter,
           new_value: num(payload.new_value),
           meta: eventMeta,
         };
@@ -686,7 +678,7 @@ export function parseContractEvent(raw: SorobanEvent): LinkoraEvent | null {
         return {
           type: eventType,
           proposal_id: num(payload.proposal_id),
-          parameter: str(payload.parameter),
+          parameter: str(payload.parameter) as GovParameter,
           new_value: num(payload.new_value),
           meta: eventMeta,
         };
