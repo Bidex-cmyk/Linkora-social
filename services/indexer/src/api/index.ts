@@ -1,4 +1,5 @@
 import express, { Request, Response, NextFunction } from "express";
+import helmet from "helmet";
 import { Pool as PgPool } from "pg";
 import { Database } from "../db";
 import { logger, requestLoggingMiddleware } from "../logger";
@@ -82,6 +83,7 @@ export function createApp(
   shutdownState?: { active: boolean }
 ): express.Application {
   const app = express();
+  app.use(helmet());
   app.set("trust proxy", 1); // trust first proxy
   app.use(express.json());
   app.use(corsMiddleware);
@@ -152,7 +154,7 @@ export function createApp(
 
   app.use("/api", rateLimit);
 
-  app.use("/api", (_req: Request, res: Response, next: NextFunction): void => {
+  app.use("/api", (req: Request, res: Response, next: NextFunction): void => {
     if (isFenced()) {
       res.status(503).json({
         error: {
@@ -249,6 +251,7 @@ if (require.main === module) {
   const { Pool } = require("pg") as typeof import("pg");
   const DATABASE_URL = process.env.DATABASE_URL ?? "";
   const _stub = new Pool({ connectionString: DATABASE_URL }) as unknown as Database;
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { loadConfig } = require("../config");
   const PORT = loadConfig().port;
   const databaseUrl = process.env.DATABASE_URL;
