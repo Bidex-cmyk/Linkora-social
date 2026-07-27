@@ -32,7 +32,6 @@ import { logger } from "./logger";
 dotenv.config();
 
 const SERVICE_VERSION = process.env.npm_package_version ?? "0.1.0";
-const COMMIT_SHA = process.env.COMMIT_SHA ?? "unknown";
 const startTime = Date.now();
 
 // Configuration
@@ -121,25 +120,6 @@ async function createApp() {
       isShuttingDown: () => shuttingDown,
     })
   );
-
-  app.get("/health", async (_req, res) => {
-    const uptime = Math.floor((Date.now() - startTime) / 1000);
-    let dbStatus = "disconnected";
-    try {
-      await database.ping();
-      dbStatus = "connected";
-    } catch {
-      /* */
-    }
-    const ok = dbStatus === "connected";
-    res.status(ok ? 200 : 503).json({
-      status: ok ? "ok" : "degraded",
-      uptime,
-      version: SERVICE_VERSION,
-      commit: COMMIT_SHA,
-      db: dbStatus,
-    });
-  });
 
   // Root info
   app.get("/", (_req, res) => {

@@ -11,6 +11,7 @@ import {
   parseCursor,
   createCursor,
 } from "./validation";
+import { stellarAddressSchema } from "@linkora/types/src/schemas";
 import { createConversationId, sanitizeError } from "./utils";
 import { z, ZodError } from "zod";
 import { idempotencyMiddleware } from "./middleware/idempotency";
@@ -22,9 +23,8 @@ import {
   internalError,
 } from "@linkora/types/src/errors";
 
-// ── WebSocket client registry (address → set of sockets) ─────────────────────
-
 const wsClients = new Map<string, Set<WebSocket>>();
+const typingRateLimitMap = new Map<string, number>();
 
 export function registerWsClient(address: string, ws: WebSocket): void {
   if (!wsClients.has(address)) wsClients.set(address, new Set());
@@ -33,8 +33,39 @@ export function registerWsClient(address: string, ws: WebSocket): void {
   ws.on("message", (data) => {
     try {
       const payload = JSON.parse(data.toString());
-      if (payload.type === "typing_status" && typeof payload.recipient === "string") {
-        pushToRecipient(payload.recipient, {
+      if (payload.type === "typing_status") {
+        if (payload.sender && payload.sender !== address) {
+          logger.warn(
+            { authenticatedAddress: address, payloadSender: payload.sender },
+            "Typing notification sender mismatch abuse detected"
+          );
+          return;
+        }
+
+        const recipient = payload.recipient;
+        if (typeof recipient !== "string" || !stellarAddressSchema.safeParse(recipient).success) {
+          logger.warn(
+            { authenticatedAddress: address, recipient },
+            "Invalid typing notification recipient address"
+          );
+          return;
+        }
+
+        const rateLimitKey = `${address}:${recipient}`;
+        const lastSent = typingRateLimitMap.get(rateLimitKey) || 0;
+        const now = Date.now();
+        if (now - lastSent < 3000) {
+          logger.warn(
+            { authenticatedAddress: address, recipient },
+            "Typing notification rate limit exceeded"
+          );
+          return;
+        }
+        typingRateLimitMap.set(rateLimitKey, now);
+
+        logger.info({ sender: address, recipient }, "Typing status notification dispatched");
+
+        pushToRecipient(recipient, {
           type: "typing_status",
           sender: address,
         });
@@ -137,10 +168,7 @@ export function createRouter(database: Database, _authService: AuthService): Rou
           messageData.timestamp
         );
 
-        logger.info(
-          { requestId: req.requestId, messageId, conversationId },
-          "Message stored"
-        );
+        logger.info({ requestId: req.requestId, messageId, conversationId }, "Message stored");
 
         pushToRecipient(messageData.recipient, {
           type: "new_message",
@@ -264,39 +292,6 @@ export function createRouter(database: Database, _authService: AuthService): Rou
       }
     }
   );
-
-  router.get("/health", async (req: Request, res: Response) => {
-    try {
-      const stats = await database.getHealthStats();
-
-      res.json({
-        status: "healthy",
-        timestamp: new Date().toISOString(),
-        database: {
-          connected: true,
-          total_messages: stats.totalMessages,
-          messages_last_24h: stats.messagesLast24h,
-          oldest_message: stats.oldestMessage?.toISOString(),
-        },
-        service: {
-          name: "linkora-dm-relay",
-          version: "0.1.0",
-          uptime: process.uptime(),
-          ws_connected_clients: [...wsClients.values()].reduce((sum, s) => sum + s.size, 0),
-        },
-      });
-    } catch (error) {
-      logger.error({ requestId: req.requestId, error }, "Health check error");
-
-      res.status(503).json({
-        error: {
-          code: "SERVICE_UNAVAILABLE",
-          message: sanitizeError(error),
-          requestId: req.requestId,
-        },
-      });
-    }
-  });
 
   return router;
 }

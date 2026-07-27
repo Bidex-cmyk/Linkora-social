@@ -1,4 +1,5 @@
 import express, { Request, Response, NextFunction } from "express";
+import helmet from "helmet";
 import { Pool } from "pg";
 import { Keypair } from "@stellar/stellar-sdk";
 import * as ed from "@noble/ed25519";
@@ -148,6 +149,7 @@ async function scheduleLoop(currentLedger: bigint): Promise<void> {
 }
 
 const app = express();
+app.use(helmet());
 app.set("trust proxy", 1); // trust first proxy
 const startTime = Date.now();
 
@@ -193,7 +195,7 @@ const creatorParamsSchema = z.object({
 
 app.get("/attestations/:creator", validateParams(creatorParamsSchema), (req, res) => {
   const { creator } = req.params;
-  const att = attestationCache.get(creator);
+  const att = attestationCache.get(creator as string);
   if (!att) {
     const err = notFoundError("no attestation found for this creator");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
