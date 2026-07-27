@@ -13,8 +13,9 @@ import { logger } from "./logger.js";
 import { rateLimiter, initRateLimiter } from "./middleware/rate-limiter.js";
 import { createHealthRouter } from "./routes/health.js";
 import { validateParams } from "./middleware/validate.js";
+import { AttestationCache } from "./attestation-cache.js";
 import { z } from "zod";
-import { notFoundError } from "@linkora/types/src/errors";
+import { notFoundError, isAppError } from "@linkora/types/src/errors.js";
 
 ed.etc.sha512Sync = (...m) => sha512(ed.etc.concatBytes(...m));
 
@@ -32,13 +33,21 @@ const ORACLE_NAME = process.env["ORACLE_NAME"] ?? "default";
 const WINDOW_LEDGERS = BigInt(process.env["WINDOW_LEDGERS"] ?? "1000");
 const PORT = parseInt(process.env["PORT"] ?? "4000", 10);
 const NETWORK_PASSPHRASE = process.env["NETWORK_PASSPHRASE"] ?? "Test SDF Network ; September 2015";
+const ATTESTATION_CACHE_MAX_SIZE = parseInt(
+  process.env["ATTESTATION_CACHE_MAX_SIZE"] ?? "10000",
+  10
+);
+const ATTESTATION_CACHE_TTL_MS = parseInt(process.env["ATTESTATION_CACHE_TTL_MS"] ?? "3600000", 10);
 
 const oraclePrivateKey = Buffer.from(ORACLE_PRIVATE_KEY_HEX, "hex");
 const oracleKeypair = Keypair.fromRawEd25519Seed(oraclePrivateKey);
 
 const db = new Pool({ connectionString: DATABASE_URL });
 
-const attestationCache = new Map<string, SignedAttestation>();
+const attestationCache = new AttestationCache<SignedAttestation>({
+  maxSize: ATTESTATION_CACHE_MAX_SIZE,
+  ttlMs: ATTESTATION_CACHE_TTL_MS,
+});
 
 let lastWindowEnd = BigInt(0);
 
@@ -153,7 +162,8 @@ function markStarted(): void {
 
 function requestIdMiddleware(req: Request, _res: Response, next: NextFunction): void {
   const existing = req.headers["x-request-id"];
-  const id = (typeof existing === "string" ? existing : null) ?? generateRequestId();
+  const raw = Array.isArray(existing) ? existing[0] : existing;
+  const id = (typeof raw === "string" ? raw : null) ?? generateRequestId();
   req.requestId = id;
   next();
 }
@@ -211,14 +221,18 @@ app.get("/attestations/:creator", validateParams(creatorParamsSchema), (req, res
   });
 });
 
+app.get("/metrics/cache", (_req, res) => {
+  res.json(attestationCache.getStats());
+});
+
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars
 app.use((err: Error, req: any, res: Response, _next: NextFunction): void => {
   logger.error({ requestId: req.requestId, err }, "Unhandled error");
 
-  const statusCode = typeof err.statusCode === "number" ? err.statusCode : 500;
-  const code = err.code || "INTERNAL_ERROR";
+  const statusCode = isAppError(err) ? err.statusCode : 500;
+  const code = isAppError(err) ? err.code : "INTERNAL_ERROR";
   const message = process.env.NODE_ENV === "development" ? err.message : "Internal server error";
 
   res.status(statusCode).json({
@@ -238,6 +252,8 @@ async function main(): Promise<void> {
       stellarAddress: oracleKeypair.publicKey(),
       contractId: CONTRACT_ID,
       windowLedgers: WINDOW_LEDGERS.toString(),
+      cacheMaxSize: ATTESTATION_CACHE_MAX_SIZE,
+      cacheTtlMs: ATTESTATION_CACHE_TTL_MS,
     },
     "Oracle starting"
   );
@@ -252,6 +268,17 @@ async function main(): Promise<void> {
 
   const pollMs = Number(WINDOW_LEDGERS) * 5_000;
   logger.info({ pollIntervalMs: pollMs }, "Oracle polling interval set");
+
+  // Periodically sweep stale TTL entries so memory is reclaimed even for
+  // creators that are never queried again after their attestation is stored.
+  // Run every quarter of the TTL (minimum every 5 minutes).
+  const purgeIntervalMs = Math.max(ATTESTATION_CACHE_TTL_MS / 4, 5 * 60 * 1000);
+  setInterval(() => {
+    const evicted = attestationCache.purgeExpired();
+    if (evicted > 0) {
+      logger.info({ evicted, ...attestationCache.getStats() }, "Attestation cache TTL sweep");
+    }
+  }, purgeIntervalMs).unref(); // unref so the timer does not prevent clean shutdown
 
   const { rpc: StellarRpc } = await import("@stellar/stellar-sdk");
   const server = new StellarRpc.Server(SOROBAN_RPC_URL);
