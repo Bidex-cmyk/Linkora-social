@@ -20,6 +20,7 @@ export interface HealthDeps {
   startTime: number;
   isStarted: () => boolean;
   startedAt: () => string | null;
+  isShuttingDown: () => boolean;
 }
 
 async function checkDatabase(db: Pool): Promise<DependencyCheck> {
@@ -58,6 +59,17 @@ export function createHealthRouter(deps: HealthDeps): Router {
   });
 
   router.get("/health/ready", async (_req, res) => {
+    if (deps.isShuttingDown()) {
+      res.status(503).json({
+        status: "not_ready",
+        checks: {
+          database: { status: "down", latencyMs: 0 },
+          stellar_rpc: { status: "down", latencyMs: 0 },
+        },
+      });
+      return;
+    }
+
     const [database, stellar_rpc] = await Promise.all([
       checkDatabase(deps.db),
       checkStellarRpc(deps.rpcUrl),

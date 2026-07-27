@@ -33,11 +33,24 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Resolve contract ID
+        id: contract
+        env:
+          INPUT_CONTRACT_ID: ${{ github.event.inputs.contract_id }}
+          VAR_CONTRACT_ID: ${{ vars.TESTNET_CONTRACT_ID }}
+        run: |
+          CONTRACT_ID="${INPUT_CONTRACT_ID:-$VAR_CONTRACT_ID}"
+          if [[ -z "$CONTRACT_ID" ]]; then
+            echo "::error::No contract ID available. Pass workflow_dispatch input 'contract_id' or set the 'TESTNET_CONTRACT_ID' repository variable (Settings > Secrets and variables > Actions > Variables) to the currently deployed testnet contract." >&2
+            exit 1
+          fi
+          echo "contract_id=$CONTRACT_ID" >> "$GITHUB_OUTPUT"
+
       - name: Run SDK E2E tests
         working-directory: packages/sdk
         env:
           TESTNET_SECRET_KEY: ${{ secrets.TESTNET_SECRET_KEY }}
-          LINKORA_CONTRACT_ID: ${{ github.event.inputs.contract_id || 'CDLDVFKHEZ2RVB3NG4UQA4VPD3TSHV6XMHXMHP2BSGCJ2IIWVTOHGDSG' }}
+          LINKORA_CONTRACT_ID: ${{ steps.contract.outputs.contract_id }}
         run: pnpm test:e2e
 
       - name: Upload test results

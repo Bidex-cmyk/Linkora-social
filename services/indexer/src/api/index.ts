@@ -26,22 +26,44 @@ import {
 import { PostgresDatabase } from "../postgres-db";
 import { HealthMonitor } from "../services/health-monitor";
 
+let warnedMissingAllowedOrigins = false;
+
 function corsMiddleware(req: Request, res: Response, next: NextFunction): void {
-  const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? "*")
+  const configuredOrigins = (process.env.ALLOWED_ORIGINS ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
 
+  const isProduction = process.env.NODE_ENV === "production";
+  let allowedOrigins = configuredOrigins;
+  if (allowedOrigins.length === 0) {
+    if (isProduction) {
+      if (!warnedMissingAllowedOrigins) {
+        logger.warn(
+          "No ALLOWED_ORIGINS set in production — CORS will reject all cross-origin requests",
+        );
+        warnedMissingAllowedOrigins = true;
+      }
+    } else {
+      // Permissive default for local development only.
+      allowedOrigins = ["*"];
+    }
+  }
+
+  const allowAll = allowedOrigins.includes("*");
   const origin = req.headers.origin;
-  if (origin) {
-    if (allowedOrigins.includes("*") || allowedOrigins.includes(origin)) {
-      res.setHeader("Access-Control-Allow-Origin", origin);
+  if (origin && (allowAll || allowedOrigins.includes(origin))) {
+    // Never echo the caller's Origin under a wildcard policy — that would
+    // grant every site credentialed access. Only a specifically allow-listed
+    // origin may receive Allow-Credentials.
+    res.setHeader("Access-Control-Allow-Origin", allowAll ? "*" : origin);
+    if (!allowAll) {
+      res.setHeader("Access-Control-Allow-Credentials", "true");
     }
   }
 
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  res.setHeader("Access-Control-Allow-Credentials", "true");
 
   if (req.method === "OPTIONS") {
     res.sendStatus(204);
