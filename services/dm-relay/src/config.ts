@@ -19,7 +19,7 @@ export function loadConfig() {
     databaseUrl: requireEnv("DATABASE_URL"),
     corsOrigin: process.env.CORS_ORIGIN?.split(",") || ["http://localhost:3000"],
     messageTtlDays: optionalInt("MESSAGE_TTL_DAYS", 7),
-    maxTimestampSkew: optionalInt("MAX_TIMESTAMP_SKEW", 30),
+    maxTimestampSkew: optionalInt("MAX_TIMESTAMP_SKEW", 300),
     stellarNetwork: process.env.STELLAR_NETWORK || "Testnet",
     idempotencyTtlHours: optionalInt("IDEMPOTENCY_TTL_HOURS", 24),
   };
