@@ -263,7 +263,7 @@ async function main(): Promise<void> {
   // Initialise rate limiter (upgrades to Redis store when REDIS_URL is set).
   await initRateLimiter();
 
-  const server = app.listen(PORT, () => {
+  const httpServer = app.listen(PORT, () => {
     logger.info({ port: PORT }, "Oracle API listening");
     markStarted();
   });
@@ -272,7 +272,7 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info({ signal }, "Oracle shutting down — failing readiness probe");
-    server.close(() => process.exit(0));
+    httpServer.close(() => process.exit(0));
     // Force-exit if connections don't drain in time.
     setTimeout(() => process.exit(1), 10_000).unref();
   }
