@@ -17,6 +17,7 @@ import {
   NotFoundError,
   SimulationError,
   ValidationError,
+  InvalidInputError,
   NetworkError,
 } from "./errors.js";
 import { GovParameter } from "./generated/types.js";
@@ -44,7 +45,7 @@ function scvI128(value: number | bigint): xdr.ScVal {
 
 function ensureNonEmptyString(value: string, fieldName: string): void {
   if (typeof value !== "string" || value.trim().length === 0) {
-    throw new ValidationError(`${fieldName} must be a non-empty string.`);
+    throw new InvalidInputError(`${fieldName} must be a non-empty string.`);
   }
 }
 
@@ -52,7 +53,7 @@ function ensureNonEmptyString(value: string, fieldName: string): void {
 function ensureAddress(value: string, fieldName: string): void {
   ensureNonEmptyString(value, fieldName);
   if (!StrKey.isValidEd25519PublicKey(value)) {
-    throw new ValidationError(`${fieldName} must be a valid Stellar public key.`);
+    throw new InvalidInputError(`${fieldName} must be a valid Stellar public key.`);
   }
 }
 
@@ -66,17 +67,17 @@ function ensureAddressList(values: string[], fieldName: string): void {
 function ensureInteger(value: number | bigint, fieldName: string, min = 0): bigint {
   if (typeof value === "bigint") {
     if (value < BigInt(min)) {
-      throw new ValidationError(`${fieldName} must be greater than or equal to ${min}.`);
+      throw new InvalidInputError(`${fieldName} must be greater than or equal to ${min}.`);
     }
     return value;
   }
 
   if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value)) {
-    throw new ValidationError(`${fieldName} must be an integer.`);
+    throw new InvalidInputError(`${fieldName} must be an integer.`);
   }
 
   if (value < min) {
-    throw new ValidationError(`${fieldName} must be greater than or equal to ${min}.`);
+    throw new InvalidInputError(`${fieldName} must be greater than or equal to ${min}.`);
   }
 
   return BigInt(value);
@@ -89,7 +90,7 @@ function ensurePositiveInteger(value: number | bigint, fieldName: string): bigin
 function ensureGovParameter(parameter: GovParameter): void {
   const valid = Object.values(GovParameter).includes(parameter);
   if (!valid) {
-    throw new ValidationError(
+    throw new InvalidInputError(
       `parameter must be one of: ${Object.values(GovParameter).join(", ")}.`
     );
   }
@@ -1359,13 +1360,27 @@ export class LinkoraClient extends GeneratedLinkoraClient {
    * console.log("Deploy Token Op XDR:", txOp);
    * ```
    */
-  deployCreatorToken(params: DeployCreatorTokenParams, sourceAccount: Account): string {
+  deployCreatorToken(params: DeployCreatorTokenParams, sourceAccount?: Account): string {
     if (!this.tokenFactoryId) {
       throw new ValidationError(
         "tokenFactoryId must be set in ClientConfig to use deployCreatorToken",
         {
           field: "tokenFactoryId",
         }
+      );
+    }
+    if (!sourceAccount) {
+      const tempSource = Keypair.random();
+      const tempAccount = new Account(tempSource.publicKey(), "0");
+      return this.buildTxForSubmit(
+        this.tokenFactoryId,
+        tempAccount,
+        "deploy_creator_token",
+        scvAddress(params.deployer),
+        scvString(params.name),
+        scvString(params.symbol),
+        scvU32(params.decimals),
+        scvI128(params.initialSupply)
       );
     }
     return this.buildTxForSubmit(

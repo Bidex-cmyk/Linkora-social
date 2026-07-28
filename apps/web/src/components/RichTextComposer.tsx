@@ -332,7 +332,6 @@ export function RichTextComposer({
           suppressContentEditableWarning
           dangerouslySetInnerHTML={{ __html: formatContent(content) }}
           data-placeholder={placeholder}
-          disabled={disabled}
         />
       ) : (
         <div className="composer-preview">
