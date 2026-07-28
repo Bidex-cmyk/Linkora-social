@@ -93,6 +93,8 @@ export class ValidationError extends LinkoraError {
 export class InvalidInputError extends ValidationError {
   constructor(message: string, details?: Record<string, unknown>, originalError?: unknown) {
     super(message, details, originalError);
+    // Override the hardcoded VALIDATION_ERROR code while preserving the prototype chain
+    (this as unknown as { code: string }).code = "INVALID_INPUT";
   }
 }
 
@@ -224,6 +226,9 @@ function mapByRegex(msg: string, err: unknown): LinkoraError {
   if (/blocked/i.test(msg)) {
     return new UnauthorizedError("Operation rejected: user has blocked you.", undefined, err);
   }
+  if (/sign|freighter|ledger|wallet/i.test(msg)) {
+    return new SigningError(msg, undefined, err);
+  }
   if (/not found|does not exist|MissingValue/i.test(msg)) {
     return new NotFoundError("The requested resource was not found.", undefined, err);
   }
@@ -238,9 +243,6 @@ function mapByRegex(msg: string, err: unknown): LinkoraError {
   }
   if (/connection|network|timeout|ECONNREFUSED|fetch failed/i.test(msg)) {
     return new NetworkError(msg, undefined, err);
-  }
-  if (/sign|freighter|ledger|wallet/i.test(msg)) {
-    return new SigningError(msg, undefined, err);
   }
 
   return new LinkoraError(msg, "LINKORA_ERROR", undefined, err);

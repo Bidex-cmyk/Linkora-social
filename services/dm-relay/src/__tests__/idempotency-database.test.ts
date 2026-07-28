@@ -55,8 +55,10 @@ class FakePool {
     }
 
     if (text.includes("DELETE FROM message_idempotency")) {
-      const match = text.match(/INTERVAL '(\d+) hours'/);
-      const hours = match ? parseInt(match[1], 10) : 0;
+      // The real query uses: NOW() - $1::integer * INTERVAL '1 hour'
+      // Extract hours from the values parameter
+      const [ttlHours] = values as [number];
+      const hours = Math.max(0, Math.floor(ttlHours));
       const cutoff = Date.now() - hours * 3_600_000;
       let deleted = 0;
       for (const [key, row] of this.rows) {

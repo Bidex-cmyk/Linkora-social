@@ -19,12 +19,10 @@ export const AutoResizeTextarea = forwardRef<HTMLTextAreaElement, AutoResizeText
         maxRows={maxRows}
         placeholder={placeholder}
         className={`w-full resize-none rounded-lg border border-[#E5E7EB] bg-white px-4 py-3 text-sm text-gray-900 placeholder:text-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-all duration-150 ${className}`}
-        style={
-          {
-            maxHeight: "200px",
-            ...props.style,
-          } as React.CSSProperties
-        }
+        style={{
+          height: 200,
+          ...props.style,
+        }}
         {...props}
       />
     );
