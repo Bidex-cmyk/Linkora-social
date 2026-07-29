@@ -2130,7 +2130,7 @@ fn test_username_too_long() {
     let user = Address::generate(&env);
     let token = Address::generate(&env);
 
-    // 51-character username should panic (MAX_NAME_LEN = 50)
+    // 51-character username should panic (MAX_NAME_LEN = 32)
     let long_name = "abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJKLMNO";
     assert_eq!(long_name.len(), 51);
     let username = String::from_str(&env, long_name);
@@ -2139,7 +2139,7 @@ fn test_username_too_long() {
 
 #[test]
 #[should_panic(
-    expected = "username can only contain alphanumeric characters, underscores, and hyphens"
+    expected = "username can only contain alphanumeric characters and underscores"
 )]
 fn test_username_with_space() {
     let env = Env::default();
@@ -2149,13 +2149,13 @@ fn test_username_with_space() {
     let user = Address::generate(&env);
     let token = Address::generate(&env);
 
-    // Usernames must be alphanumeric/underscore/hyphen only; a space is rejected.
+    // Usernames must be alphanumeric/underscore only; a space is rejected.
     client.set_profile(&user, &String::from_str(&env, "user name"), &token);
 }
 
 #[test]
 #[should_panic(
-    expected = "username can only contain alphanumeric characters, underscores, and hyphens"
+    expected = "username can only contain alphanumeric characters and underscores"
 )]
 fn test_username_with_special_char() {
     let env = Env::default();
@@ -2165,8 +2165,125 @@ fn test_username_with_special_char() {
     let user = Address::generate(&env);
     let token = Address::generate(&env);
 
-    // Usernames must be alphanumeric/underscore/hyphen only; '@' is rejected.
+    // Usernames must be alphanumeric/underscore only; '@' is rejected.
     client.set_profile(&user, &String::from_str(&env, "user@name"), &token);
+}
+
+// ── Username first-character validation tests (issue #881) ────────────────────────
+
+#[test]
+#[should_panic(expected = "username must start with a letter")]
+fn test_username_starting_with_number_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // Username starting with a digit must be rejected.
+    client.set_profile(&user, &String::from_str(&env, "1username"), &token);
+}
+
+#[test]
+#[should_panic(expected = "username must start with a letter")]
+fn test_username_starting_with_underscore_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // Username starting with underscore must be rejected.
+    client.set_profile(&user, &String::from_str(&env, "_username"), &token);
+}
+
+#[test]
+fn test_username_with_underscore_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // Username with underscore in the middle must succeed.
+    client.set_profile(&user, &String::from_str(&env, "user_name"), &token);
+    let profile = client.get_profile(&user).unwrap();
+    assert_eq!(profile.username, String::from_str(&env, "user_name"));
+}
+
+#[test]
+#[should_panic(expected = "username must be at least 3 characters")]
+fn test_username_single_char_digit_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // A single-character username that is a digit must be rejected
+    // (min-length check fires first: 1 < 3).
+    client.set_profile(&user, &String::from_str(&env, "1"), &token);
+}
+
+#[test]
+#[should_panic(expected = "username must be at least 3 characters")]
+fn test_username_empty_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // Empty username must be rejected (0 < 3).
+    client.set_profile(&user, &String::from_str(&env, ""), &token);
+}
+
+#[test]
+#[should_panic(expected = "username must be at least 3 characters")]
+fn test_username_single_letter_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // A single letter must be rejected (1 < 3).
+    client.set_profile(&user, &String::from_str(&env, "a"), &token);
+}
+
+#[test]
+#[should_panic(expected = "username can only contain alphanumeric characters and underscores")]
+fn test_username_with_hyphen_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // Hyphen is no longer allowed in usernames.
+    client.set_profile(&user, &String::from_str(&env, "user-name"), &token);
+}
+
+#[test]
+fn test_username_valid_with_numbers_and_underscore_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // Valid username with letters, numbers, and underscore.
+    client.set_profile(&user, &String::from_str(&env, "User_123"), &token);
+    let profile = client.get_profile(&user).unwrap();
+    assert_eq!(profile.username, String::from_str(&env, "User_123"));
 }
 
 // ── Unfollow event emission tests (issue #129) ───────────────────────────────────
@@ -5269,7 +5386,7 @@ fn test_717_set_profile_username_33_chars_rejected() {
 
     let user = Address::generate(&env);
     let token = Address::generate(&env);
-    // 51-character username must panic (MAX_NAME_LEN = 50)
+    // 51-character username must panic (MAX_NAME_LEN = 32)
     let long_name = "abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJKLMNO";
     assert_eq!(long_name.len(), 51);
     let username = String::from_str(&env, long_name);

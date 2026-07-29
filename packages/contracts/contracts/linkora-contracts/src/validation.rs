@@ -76,6 +76,18 @@ fn validate_string_max_len(env: &Env, label: &str, value: &String, max: u32) {
     );
 }
 
+/// Validates a username against the contract's naming rules.
+///
+/// A valid username must:
+/// - Be at least `MIN_NAME_LEN` (3) characters long
+/// - Be at most `MAX_NAME_LEN` (32) characters long
+/// - Start with a letter (a–z, A–Z)
+/// - Contain only alphanumeric characters (a–z, A–Z, 0–9) and underscores (`_`)
+/// - Not be a reserved word (e.g., "admin", "system", "moderator")
+///
+/// # Panics
+///
+/// Panics with a descriptive error message on the first violated rule.
 pub fn validate_username(env: &Env, username: &String) {
     // Check minimum length
     require_with_error!(
@@ -87,36 +99,27 @@ pub fn validate_username(env: &Env, username: &String) {
     // Check maximum length
     validate_string_max_len(env, "username", username, MAX_NAME_LEN);
 
-    // Check for alphanumeric, underscore, and hyphen only
+    // Check that first character is a letter
     let username_bytes = username.to_bytes();
+    if let Some(first_byte) = username_bytes.first() {
+        require_with_error!(
+            env,
+            first_byte.is_ascii_alphabetic(),
+            "username must start with a letter"
+        );
+    }
+
+    // Check for alphanumeric and underscore only
     for byte in username_bytes.iter() {
         let is_valid = byte.is_ascii_lowercase()
             || byte.is_ascii_uppercase()
             || byte.is_ascii_digit()
-            || byte == b'_'
-            || byte == b'-';
+            || byte == b'_';
 
         require_with_error!(
             env,
             is_valid,
-            "username can only contain alphanumeric characters, underscores, and hyphens"
-        );
-    }
-
-    // Check that username doesn't start or end with underscore/hyphen
-    if let Some(first_byte) = username_bytes.first() {
-        require_with_error!(
-            env,
-            first_byte != b'_' && first_byte != b'-',
-            "username cannot start with underscore or hyphen"
-        );
-    }
-
-    if let Some(last_byte) = username_bytes.last() {
-        require_with_error!(
-            env,
-            last_byte != b'_' && last_byte != b'-',
-            "username cannot end with underscore or hyphen"
+            "username can only contain alphanumeric characters and underscores"
         );
     }
 
