@@ -39,6 +39,7 @@ const ATTESTATION_CACHE_MAX_SIZE = parseInt(
   10
 );
 const ATTESTATION_CACHE_TTL_MS = parseInt(process.env["ATTESTATION_CACHE_TTL_MS"] ?? "3600000", 10);
+const SHUTDOWN_DRAIN_TIMEOUT_MS = parseInt(process.env["SHUTDOWN_DRAIN_TIMEOUT_MS"] ?? "30000", 10);
 
 const oraclePrivateKey = Buffer.from(ORACLE_PRIVATE_KEY_HEX, "hex");
 const oracleKeypair = Keypair.fromRawEd25519Seed(oraclePrivateKey);
@@ -270,16 +271,66 @@ async function main(): Promise<void> {
     markStarted();
   });
 
-  function gracefulShutdown(signal: string): void {
+  let pollInterval: ReturnType<typeof setInterval> | null = null;
+  // Promise for the window tick currently in flight, so shutdown can wait for
+  // in-progress attestation submissions to complete before closing resources.
+  let currentTick: Promise<void> = Promise.resolve();
+
+  async function gracefulShutdown(signal: string): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
-    logger.info({ signal }, "Oracle shutting down — failing readiness probe");
-    httpServer.close(() => process.exit(0));
-    // Force-exit if connections don't drain in time.
-    setTimeout(() => process.exit(1), 10_000).unref();
+    logger.info(
+      { signal, drainTimeoutMs: SHUTDOWN_DRAIN_TIMEOUT_MS },
+      "Oracle shutting down — failing readiness probe"
+    );
+
+    // Force-exit if draining takes longer than the configured timeout.
+    const forceExitTimer = setTimeout(() => {
+      logger.error(
+        { drainTimeoutMs: SHUTDOWN_DRAIN_TIMEOUT_MS },
+        "Drain timeout exceeded — forcing exit"
+      );
+      process.exit(1);
+    }, SHUTDOWN_DRAIN_TIMEOUT_MS);
+    forceExitTimer.unref();
+
+    try {
+      // 1. Stop scheduling new window ticks.
+      if (pollInterval !== null) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+      }
+
+      // 2. Stop accepting new HTTP connections and drain existing ones.
+      const httpClosed = new Promise<void>((resolve) => {
+        httpServer.close((err) => {
+          if (err) logger.warn({ err }, "Error while closing HTTP server");
+          resolve();
+        });
+      });
+
+      // 3. Wait for the in-flight window tick (attestation submissions) to
+      //    finish. tick() handles its own errors, but guard anyway.
+      await currentTick.catch(() => undefined);
+      logger.info("In-flight window tick completed");
+
+      await httpClosed;
+      logger.info("HTTP server closed");
+
+      // 4. Close the PostgreSQL pool once nothing can issue new queries.
+      await db.end();
+      logger.info("PostgreSQL pool closed");
+
+      clearTimeout(forceExitTimer);
+      logger.info({ signal }, "Graceful shutdown complete");
+      process.exit(0);
+    } catch (err) {
+      logger.error({ err }, "Error during graceful shutdown");
+      process.exit(1);
+    }
   }
-  process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
-  process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+  process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
+  process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
 
   const pollMs = Number(WINDOW_LEDGERS) * 5_000;
   logger.info({ pollIntervalMs: pollMs }, "Oracle polling interval set");
@@ -307,8 +358,15 @@ async function main(): Promise<void> {
     }
   };
 
-  await tick();
-  setInterval(tick, pollMs);
+  // Track the running tick so gracefulShutdown can await its completion.
+  const runTick = (): Promise<void> => {
+    if (shuttingDown) return currentTick;
+    currentTick = tick();
+    return currentTick;
+  };
+
+  await runTick();
+  pollInterval = setInterval(() => void runTick(), pollMs);
 }
 
 main().catch((err) => {

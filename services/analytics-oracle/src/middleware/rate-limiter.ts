@@ -67,18 +67,29 @@ interface MemoryEntry {
  * prevents the unbounded memory growth that existed in the original Map-based
  * implementation.
  *
+ * Memory is bounded two ways:
+ *   1. A periodic sweep (default every 5 min) evicts entries whose TTL has
+ *      elapsed and logs how many were removed / remain.
+ *   2. A hard cap on tracked keys (default 100 000). When the cap is reached
+ *      the least-recently-used key is evicted; the Map's insertion order is
+ *      maintained as an LRU by re-inserting keys on every access.
+ *
  * ⚠️  This store does NOT share state across process instances. Use the Redis
  * store in multi-replica deployments.
  */
 export class InMemoryRateLimitStore implements RateLimitStore {
   private entries = new Map<string, MemoryEntry>();
   private sweepInterval: ReturnType<typeof setInterval> | null = null;
+  private maxEntries: number;
+  private lruEvictions = 0;
 
   /**
    * @param sweepIntervalMs  How often to run the stale-entry sweep (default 5 min).
    *                         Pass 0 to disable the background sweep (useful in tests).
+   * @param maxEntries       Maximum number of tracked keys before LRU eviction.
    */
-  constructor(sweepIntervalMs = 5 * 60 * 1000) {
+  constructor(sweepIntervalMs = 5 * 60 * 1000, maxEntries = 100_000) {
+    this.maxEntries = maxEntries;
     if (sweepIntervalMs > 0) {
       this.sweepInterval = setInterval(() => this.sweep(), sweepIntervalMs).unref();
     }
@@ -88,12 +99,18 @@ export class InMemoryRateLimitStore implements RateLimitStore {
     const cutoff = nowMs - windowMs;
     let entry = this.entries.get(key);
 
-    if (!entry) {
+    if (entry) {
+      // Re-insert to move the key to the back of the Map's insertion order,
+      // making the Map double as an LRU list (front = least recently used).
+      this.entries.delete(key);
+    } else {
       entry = { timestamps: [], expiresAt: nowMs + windowMs * 2 };
-      this.entries.set(key, entry);
     }
+    this.entries.set(key, entry);
+    this.evictLeastRecentlyUsed();
 
-    // Prune expired timestamps and refresh TTL
+    // Prune expired timestamps and refresh TTL. Timestamps are appended in
+    // monotonically non-decreasing order, so the array stays sorted.
     entry.timestamps = entry.timestamps.filter((t) => t > cutoff);
     entry.timestamps.push(nowMs);
     entry.expiresAt = nowMs + windowMs * 2;
@@ -109,21 +126,51 @@ export class InMemoryRateLimitStore implements RateLimitStore {
     const inWindow = entry.timestamps.filter((t) => t > cutoff);
     if (inWindow.length === 0) return null;
 
-    return Math.min(...inWindow);
+    // Timestamps are stored in ascending order, so the first in-window entry
+    // is the oldest. Never spread into Math.min — a large window would blow
+    // the call-stack argument limit.
+    return inWindow[0];
   }
 
   async clear(): Promise<void> {
     this.entries.clear();
   }
 
+  /** Number of keys currently tracked (for tests and metrics). */
+  size(): number {
+    return this.entries.size;
+  }
+
+  /** Evict LRU keys until the store is within its cap. */
+  private evictLeastRecentlyUsed(): void {
+    while (this.entries.size > this.maxEntries) {
+      const oldestKey = this.entries.keys().next().value;
+      if (oldestKey === undefined) break;
+      this.entries.delete(oldestKey);
+      this.lruEvictions++;
+    }
+  }
+
   /** Evict entries whose TTL has elapsed. Called by the background timer. */
   private sweep(): void {
     const now = Date.now();
+    let removed = 0;
     for (const [key, entry] of this.entries) {
       if (entry.expiresAt <= now) {
         this.entries.delete(key);
+        removed++;
       }
     }
+    logger.info(
+      {
+        entriesRemoved: removed,
+        entriesRemaining: this.entries.size,
+        lruEvictionsSinceLastSweep: this.lruEvictions,
+        maxEntries: this.maxEntries,
+      },
+      "Rate limiter cleanup completed"
+    );
+    this.lruEvictions = 0;
   }
 
   destroy(): void {
@@ -254,7 +301,10 @@ export async function createRateLimitStore(redisUrl?: string): Promise<RateLimit
       "Rate limit state is NOT shared across instances and will reset on restart. " +
       "Set REDIS_URL to enable cross-instance rate limiting."
   );
-  return new InMemoryRateLimitStore();
+  return new InMemoryRateLimitStore(
+    oracleRateLimitConfig.cleanupIntervalMs,
+    oracleRateLimitConfig.maxEntries
+  );
 }
 
 // ── RateLimiter (store-backed) ────────────────────────────────────────────────

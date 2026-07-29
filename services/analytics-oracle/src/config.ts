@@ -6,6 +6,10 @@ export interface OracleRateLimitConfig {
   windowMs: number;
   maxRequests: number;
   bypassIps: string[];
+  /** Max unique keys tracked by the in-memory store before LRU eviction. */
+  maxEntries: number;
+  /** How often the in-memory store sweeps expired entries (ms). */
+  cleanupIntervalMs: number;
 }
 
 export interface OracleCacheConfig {
@@ -27,6 +31,11 @@ export const oracleRateLimitConfig: OracleRateLimitConfig = {
   windowMs: parseInt(process.env["ORACLE_RATE_LIMIT_WINDOW_MS"] ?? "60000", 10),
   maxRequests: parseInt(process.env["ORACLE_RATE_LIMIT_MAX_REQUESTS"] ?? "10", 10),
   bypassIps: parseBypassIps(process.env["ORACLE_RATE_LIMIT_BYPASS_IPS"]),
+  maxEntries: parseInt(process.env["ORACLE_RATE_LIMIT_MAX_ENTRIES"] ?? "100000", 10),
+  cleanupIntervalMs: parseInt(
+    process.env["ORACLE_RATE_LIMIT_CLEANUP_INTERVAL_MS"] ?? String(5 * 60 * 1000),
+    10
+  ),
 };
 
 export const oracleCacheConfig: OracleCacheConfig = {
