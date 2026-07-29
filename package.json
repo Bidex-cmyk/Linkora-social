@@ -40,5 +40,6 @@
       "bash -c 'cd packages/contracts && cargo fmt'"
     ]
   },
-  "packageManager": "pnpm@9.15.9"
+  "packageManager": "pnpm@9.15.9",
+  "license": "MIT"
 }

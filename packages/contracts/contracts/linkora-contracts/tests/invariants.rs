@@ -17,7 +17,6 @@
 /// 12. Quorum decay monotonic
 /// 13. Oracle key persists
 /// 14. Attestation nullifier immutable
-
 extern crate alloc;
 extern crate std;
 
@@ -140,9 +139,18 @@ fn invariant_balance_tracking() {
 
     client.tip(&tipper, &post_id, &token, &1000);
 
-    assert_eq!(TokenClient::new(&env, &token).balance(&tipper), tipper_before - 1000);
-    assert_eq!(TokenClient::new(&env, &token).balance(&treasury), treasury_before + 25);
-    assert_eq!(TokenClient::new(&env, &token).balance(&alice), alice_before + 975);
+    assert_eq!(
+        TokenClient::new(&env, &token).balance(&tipper),
+        tipper_before - 1000
+    );
+    assert_eq!(
+        TokenClient::new(&env, &token).balance(&treasury),
+        treasury_before + 25
+    );
+    assert_eq!(
+        TokenClient::new(&env, &token).balance(&alice),
+        alice_before + 975
+    );
 
     let post = client.get_post(&post_id).unwrap();
     assert_eq!(post.tip_total, 975);
@@ -201,7 +209,10 @@ fn invariant_tip_safe_arithmetic() {
     assert_eq!(post.tip_total, 0, "at 100% fee, author gets 0");
 
     let treasury_bal = TokenClient::new(&env, &token).balance(&treasury);
-    assert_eq!(treasury_bal, amount, "treasury gets full amount at 100% fee");
+    assert_eq!(
+        treasury_bal, amount,
+        "treasury gets full amount at 100% fee"
+    );
 }
 
 // ── Invariant 6: Quorum floor is enforced ──────────────────────────────────
@@ -389,7 +400,11 @@ fn invariant_quorum_decay_monotonic() {
 
     env.ledger().with_mut(|l| l.sequence_number += 2000);
     let q_floor = client.effective_quorum(&proposal_id);
-    assert!(q_floor >= 10, "effective quorum must not go below floor: {}", q_floor);
+    assert!(
+        q_floor >= 10,
+        "effective quorum must not go below floor: {}",
+        q_floor
+    );
 }
 
 // ── Invariant 13: Oracle key persists after registration ───────────────────
