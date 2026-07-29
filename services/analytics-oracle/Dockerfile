@@ -12,6 +12,10 @@ RUN npm run build
 # Stage 2: Production
 FROM node:18-alpine
 
+# Ensure the logger uses JSON output and never loads pino-pretty (a
+# devDependency that is not installed in this image).
+ENV NODE_ENV=production
+
 RUN apk add --no-cache curl
 
 RUN addgroup -g 1001 -S appgroup && \
