@@ -11,7 +11,7 @@
   "bugs": {
     "url": "https://github.com/Epta-Node/Linkora-social/issues"
   },
-  "license": "Apache-2.0",
+  "license": "MIT",
   "author": "Linkora Contributors",
   "keywords": [
     "stellar",

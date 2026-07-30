@@ -2,6 +2,7 @@
   "name": "@linkora/indexer",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "Off-chain indexer service for Linkora social contract events",
   "main": "dist/index.js",
   "scripts": {

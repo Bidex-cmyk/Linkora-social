@@ -4,6 +4,7 @@
   "type": "module",
   "description": "Linkora analytics oracle — signs creator analytics reports with Ed25519 and submits attestations on-chain",
   "private": true,
+  "license": "MIT",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
