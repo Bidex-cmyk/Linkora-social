@@ -5,6 +5,9 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
+      # Dev-only default credentials — postgres:16-alpine refuses to start
+      # without POSTGRES_PASSWORD. Override via a .env file for anything
+      # beyond local development.
       POSTGRES_USER: ${POSTGRES_USER:-linkora}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-linkora}
       POSTGRES_DB: ${POSTGRES_DB:-linkora}
