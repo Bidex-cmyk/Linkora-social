@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { z, ZodError } from "zod";
-import { validationError } from "@linkora/types/src/errors";
+import { validationError } from "@linkora/types";
 
 type ValidationTarget = "body" | "query" | "params";
 

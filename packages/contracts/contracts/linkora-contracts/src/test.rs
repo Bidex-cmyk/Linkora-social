@@ -2138,9 +2138,7 @@ fn test_username_too_long() {
 }
 
 #[test]
-#[should_panic(
-    expected = "username can only contain alphanumeric characters and underscores"
-)]
+#[should_panic(expected = "username can only contain alphanumeric characters and underscores")]
 fn test_username_with_space() {
     let env = Env::default();
     env.mock_all_auths();
@@ -2154,9 +2152,7 @@ fn test_username_with_space() {
 }
 
 #[test]
-#[should_panic(
-    expected = "username can only contain alphanumeric characters and underscores"
-)]
+#[should_panic(expected = "username can only contain alphanumeric characters and underscores")]
 fn test_username_with_special_char() {
     let env = Env::default();
     env.mock_all_auths();
