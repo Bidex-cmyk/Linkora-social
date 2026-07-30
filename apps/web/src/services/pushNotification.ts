@@ -37,7 +37,7 @@ export async function registerServiceWorkerAndSubscribe(): Promise<PushSubscript
       const convertedKey = urlBase64ToUint8Array(VAPID_PUBLIC_KEY);
       subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: convertedKey,
+        applicationServerKey: convertedKey as BufferSource,
       });
     }
 

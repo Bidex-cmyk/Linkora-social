@@ -8,12 +8,9 @@ export * from "./events/subscriber.js";
 export * from "./health.js";
 export * from "./config.js";
 export * from "./utils/retry.js";
-export type {
-  FollowEvent,
-  LikePostEvent as LikeEvent,
-  TipEvent,
-} from "./events/types.js";
-export { LinkoraEvent, parseContractEvent } from "./events/types.js";
+export type { FollowEvent, LikePostEvent as LikeEvent, TipEvent } from "./events/types.js";
+export type { LinkoraEvent } from "./events/types.js";
+export { parseContractEvent } from "./events/types.js";
 export type { RawLinkoraEvent, parseRawContractEvent } from "./generated/events.js";
 export * as dm from "./dm/index.js";
 export * from "./dm/index.js";

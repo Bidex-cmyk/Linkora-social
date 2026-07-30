@@ -36,14 +36,7 @@ export const Logo: React.FC<LogoProps> = ({
 
   const renderContent = () => {
     if (variant === "icon") {
-      return (
-        <LogoIcon
-          size={size}
-          animated={animated}
-          variant={variant === "white" ? "white" : variant === "mono" ? "mono" : "gradient"}
-          className={className}
-        />
-      );
+      return <LogoIcon size={size} animated={animated} variant="gradient" className={className} />;
     }
 
     if (variant === "white") {

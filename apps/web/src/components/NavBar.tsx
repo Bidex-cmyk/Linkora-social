@@ -285,7 +285,7 @@ export function NavBar() {
       <CreatePostModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
-        author={address}
+        author={address ?? undefined}
       />
 
       {/* Wallet Modal */}

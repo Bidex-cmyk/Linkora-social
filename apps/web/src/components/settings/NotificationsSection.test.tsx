@@ -8,13 +8,13 @@ describe("NotificationsSection", () => {
   });
 
   it("should have no accessibility violations", async () => {
-    const { container } = render(<NotificationsSection />);
+    const { container } = render(<NotificationsSection address="GPUBLICKEY" />);
     const results = await axe(container);
     expect(results).toHaveNoViolations();
   });
 
   it("should display notification settings", () => {
-    render(<NotificationsSection />);
+    render(<NotificationsSection address="GPUBLICKEY" />);
 
     expect(screen.getByText("Notifications")).toBeInTheDocument();
     expect(screen.getByText("Browser Push Notifications")).toBeInTheDocument();
@@ -27,7 +27,7 @@ describe("NotificationsSection", () => {
   });
 
   it("should toggle notification settings", () => {
-    render(<NotificationsSection />);
+    render(<NotificationsSection address="GPUBLICKEY" />);
 
     const newFollowersToggle = screen.getByLabelText("Toggle New Followers");
 
@@ -44,7 +44,7 @@ describe("NotificationsSection", () => {
   });
 
   it("should persist settings to localStorage", () => {
-    render(<NotificationsSection />);
+    render(<NotificationsSection address="GPUBLICKEY" />);
 
     const newLikesToggle = screen.getByLabelText("Toggle New Likes");
     fireEvent.click(newLikesToggle);
@@ -57,7 +57,7 @@ describe("NotificationsSection", () => {
   });
 
   it("should have proper ARIA attributes on toggle switches", () => {
-    render(<NotificationsSection />);
+    render(<NotificationsSection address="GPUBLICKEY" />);
 
     const toggles = screen.getAllByRole("switch");
     toggles.forEach((toggle) => {
@@ -69,7 +69,7 @@ describe("NotificationsSection", () => {
     const mockRequestPermission = jest.fn().mockResolvedValue("granted");
     window.Notification.requestPermission = mockRequestPermission;
 
-    render(<NotificationsSection />);
+    render(<NotificationsSection address="GPUBLICKEY" />);
 
     const pushToggle = screen.getByRole("switch", { checked: false });
     await act(async () => {
