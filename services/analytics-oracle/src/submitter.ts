@@ -168,7 +168,7 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
 // ── Submission ────────────────────────────────────────────────────────────────
 
 export async function submitAttestation(
-  rpcUrl: string,
+  server: rpc.Server,
   networkPassphrase: string,
   contractId: string,
   oracleName: string,
@@ -179,10 +179,9 @@ export async function submitAttestation(
   windowStart: bigint,
   windowEnd: bigint
 ): Promise<string> {
-  const server = new rpc.Server(rpcUrl);
-
   // The whole flow is rebuilt on each attempt so the source account sequence
   // number is refreshed and the transaction is re-simulated and re-signed.
+  // The caller owns the rpc.Server instance and reuses it across all calls.
   return withRetry(
     async () => {
       const op = new Contract(contractId).call(
