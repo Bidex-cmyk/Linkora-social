@@ -8,10 +8,18 @@
 
 import { Router } from "express";
 import { Pool } from "pg";
+import { logger } from "../logger.js";
+
+/** Slow-check warning threshold in ms — logs a warning but does not fail. */
+const DB_SLOW_THRESHOLD_MS = 1_000;
+
+/** Hard timeout for the database health check query in ms. */
+const DB_HEALTH_TIMEOUT_MS = 5_000;
 
 interface DependencyCheck {
   status: "up" | "down";
   latencyMs: number;
+  error?: string;
 }
 
 export interface HealthDeps {
@@ -25,11 +33,55 @@ export interface HealthDeps {
 
 async function checkDatabase(db: Pool): Promise<DependencyCheck> {
   const start = Date.now();
+  let client;
   try {
-    await db.query("SELECT 1");
-    return { status: "up", latencyMs: Date.now() - start };
-  } catch {
-    return { status: "down", latencyMs: Date.now() - start };
+    client = await db.connect();
+
+    // Use pg statement_timeout to enforce a hard 5-second limit on the query.
+    // This covers the case where the DB accepts the connection but hangs on
+    // executing queries (i.e. not a refused connection, just unresponsive).
+    await client.query(`SET statement_timeout = ${DB_HEALTH_TIMEOUT_MS}`);
+
+    // Race the health-check query against an AbortController timer so the
+    // health endpoint never blocks beyond DB_HEALTH_TIMEOUT_MS regardless of
+    // whether the pg driver honours statement_timeout in all edge cases.
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), DB_HEALTH_TIMEOUT_MS);
+
+    try {
+      await Promise.race([
+        client.query("SELECT 1"),
+        new Promise<never>((_resolve, reject) => {
+          ac.signal.addEventListener("abort", () =>
+            reject(new Error(`Database health check timed out after ${DB_HEALTH_TIMEOUT_MS}ms`))
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+
+    const latencyMs = Date.now() - start;
+
+    if (latencyMs > DB_SLOW_THRESHOLD_MS) {
+      logger.warn({ latencyMs, threshold: DB_SLOW_THRESHOLD_MS }, "health: slow database check");
+    }
+
+    return { status: "up", latencyMs };
+  } catch (err: unknown) {
+    const latencyMs = Date.now() - start;
+    const message = err instanceof Error ? err.message : String(err);
+    const isTimeout =
+      message.includes("timed out") || message.includes("statement_timeout");
+
+    logger.error(
+      { latencyMs, error: message, timeout: isTimeout },
+      "health: database check failed"
+    );
+
+    return { status: "down", latencyMs, error: isTimeout ? "timeout" : "error" };
+  } finally {
+    client?.release();
   }
 }
 
