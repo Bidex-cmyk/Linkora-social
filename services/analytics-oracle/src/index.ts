@@ -1,7 +1,7 @@
 import express, { Request, Response, NextFunction } from "express";
 import helmet from "helmet";
 import { Pool } from "pg";
-import { Keypair } from "@stellar/stellar-sdk";
+import { Keypair, rpc as StellarRpc } from "@stellar/stellar-sdk";
 import * as ed from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha512";
 import { randomUUID } from "crypto";
@@ -45,6 +45,10 @@ const oraclePrivateKey = Buffer.from(ORACLE_PRIVATE_KEY_HEX, "hex");
 const oracleKeypair = Keypair.fromRawEd25519Seed(oraclePrivateKey);
 
 const db = new Pool({ connectionString: DATABASE_URL });
+
+/** Shared rpc.Server instance — created once at startup and reused for all
+ *  Soroban RPC calls (ledger polling + attestation submission). */
+const rpcServer = new StellarRpc.Server(SOROBAN_RPC_URL);
 
 const attestationCache = new AttestationCache<SignedAttestation>({
   maxSize: ATTESTATION_CACHE_MAX_SIZE,
@@ -107,7 +111,7 @@ async function runWindow(windowStart: bigint, windowEnd: bigint): Promise<void> 
     let txHash: string;
     try {
       txHash = await submitAttestation(
-        SOROBAN_RPC_URL,
+        rpcServer,
         NETWORK_PASSPHRASE,
         CONTRACT_ID,
         ORACLE_NAME,
@@ -346,12 +350,9 @@ async function main(): Promise<void> {
     }
   }, purgeIntervalMs).unref(); // unref so the timer does not prevent clean shutdown
 
-  const { rpc: StellarRpc } = await import("@stellar/stellar-sdk");
-  const server = new StellarRpc.Server(SOROBAN_RPC_URL);
-
   const tick = async () => {
     try {
-      const info = await server.getLatestLedger();
+      const info = await rpcServer.getLatestLedger();
       await scheduleLoop(BigInt(info.sequence));
     } catch (err) {
       logger.error({ err }, "Oracle tick error");
