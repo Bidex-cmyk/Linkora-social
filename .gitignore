@@ -13,6 +13,9 @@ apps/mobile/coverage/
 Thumbs.db
 
 # Build artifacts
+# NOTE: contracts/linkora-contracts/linkora_contracts.wasm is force-committed
+# despite the *.wasm rule below — cargo test embeds it at compile time and CI
+# checkouts otherwise lack it (js-ci runs `pnpm test` without building the wasm).
 *.wasm
 *.exe
 *.dll
