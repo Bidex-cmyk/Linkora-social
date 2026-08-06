@@ -1423,7 +1423,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
    */
   setProfileWithNewToken(
     params: SetProfileWithNewTokenParams,
-    sourceAccount: Account
+    sourceAccount?: Account
   ): [string, string] {
     if (!this.tokenFactoryId) {
       throw new ValidationError(

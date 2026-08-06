@@ -107,12 +107,14 @@ export class GracefulShutdown {
         logger.info("PostgreSQL pool closed");
       });
 
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<void>((_, reject) => {
-      setTimeout(() => reject(new Error("Shutdown timed out")), this.shutdownTimeoutMs);
+      timeoutId = setTimeout(() => reject(new Error("Shutdown timed out")), this.shutdownTimeoutMs);
     });
 
     try {
       await Promise.race([Promise.all([wsClose, pgClose]), timeout]);
+      if (timeoutId) clearTimeout(timeoutId);
       logger.info({ signal }, "Shutdown complete");
       process.exit(0);
     } catch {

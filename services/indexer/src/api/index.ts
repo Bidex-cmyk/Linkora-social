@@ -41,7 +41,7 @@ function corsMiddleware(req: Request, res: Response, next: NextFunction): void {
     if (isProduction) {
       if (!warnedMissingAllowedOrigins) {
         logger.warn(
-          "No ALLOWED_ORIGINS set in production — CORS will reject all cross-origin requests",
+          "No ALLOWED_ORIGINS set in production — CORS will reject all cross-origin requests"
         );
         warnedMissingAllowedOrigins = true;
       }
@@ -89,6 +89,15 @@ export function createApp(
   app.use(corsMiddleware);
   app.use(requestLoggingMiddleware);
 
+  // Reject new requests with 503 once graceful shutdown has begun.
+  app.use((_req: Request, res: Response, next: NextFunction): void => {
+    if (shutdownState?.active) {
+      res.status(503).json({ error: "Service shutting down", code: "SHUTTING_DOWN" });
+      return;
+    }
+    next();
+  });
+
   const startTime = Date.now();
   const version = process.env.npm_package_version ?? "0.1.0";
   const commit = process.env.COMMIT_SHA ?? "unknown";
@@ -96,16 +105,6 @@ export function createApp(
     healthMonitor ?? (pg ? new HealthMonitor(pg, process.env.STELLAR_RPC_URL ?? "") : undefined);
 
   app.get("/health", async (_req: Request, res: Response): Promise<void> => {
-    if (shutdownState?.active) {
-      res.status(503).json({
-        status: "shutting_down",
-        uptime: Math.floor((Date.now() - startTime) / 1000),
-        version,
-        commit,
-      });
-      return;
-    }
-
     const uptime = Math.floor((Date.now() - startTime) / 1000);
     const backfill = getBackfillState();
     const readiness = monitor

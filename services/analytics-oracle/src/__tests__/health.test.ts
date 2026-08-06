@@ -13,7 +13,8 @@
 import http from "node:http";
 import express from "express";
 import { createHealthRouter, HealthDeps } from "../routes/health.js";
-import { Pool, PoolClient } from "pg";
+import { Pool } from "pg";
+import { jest } from "@jest/globals";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -23,7 +24,9 @@ function get(server: http.Server, path: string): Promise<{ status: number; body:
     const addr = server.address() as { port: number };
     const req = http.request({ host: "127.0.0.1", port: addr.port, path, method: "GET" }, (res) => {
       let raw = "";
-      res.on("data", (chunk: Buffer) => { raw += chunk.toString(); });
+      res.on("data", (chunk: Buffer) => {
+        raw += chunk.toString();
+      });
       res.on("end", () => {
         try {
           resolve({ status: res.statusCode ?? 0, body: JSON.parse(raw) });
@@ -61,16 +64,20 @@ function makeDeps(overrides: Partial<HealthDeps> = {}): HealthDeps {
 
 /** Pool whose queries resolve immediately. */
 function okPool(): Pool {
-  const client: Partial<PoolClient> = {
-    query: jest.fn().mockResolvedValue({ rows: [] }),
+  const client = {
+    query: jest.fn(async () => ({ rows: [] })),
     release: jest.fn(),
   };
-  return { connect: jest.fn().mockResolvedValue(client) } as unknown as Pool;
+  return { connect: jest.fn(async () => client) } as unknown as Pool;
 }
 
 /** Pool whose connect() rejects — simulates a refused connection. */
 function errorPool(msg = "connection refused"): Pool {
-  return { connect: jest.fn().mockRejectedValue(new Error(msg)) } as unknown as Pool;
+  return {
+    connect: jest.fn(async () => {
+      throw new Error(msg);
+    }),
+  } as unknown as Pool;
 }
 
 /**
@@ -79,16 +86,16 @@ function errorPool(msg = "connection refused"): Pool {
  * succeeds; only the actual health-check query blocks.
  */
 function hangingPool(hangMs = 30_000): Pool {
-  const client: Partial<PoolClient> = {
-    query: jest.fn().mockImplementation((sql: string) => {
+  const client = {
+    query: jest.fn(async (sql: string) => {
       if (typeof sql === "string" && sql.startsWith("SET statement_timeout")) {
-        return Promise.resolve({ rows: [] });
+        return { rows: [] };
       }
-      return new Promise((_res) => setTimeout(_res, hangMs));
+      return await new Promise((_res) => setTimeout(_res, hangMs));
     }),
     release: jest.fn(),
   };
-  return { connect: jest.fn().mockResolvedValue(client) } as unknown as Pool;
+  return { connect: jest.fn(async () => client) } as unknown as Pool;
 }
 
 // Silence logger output during tests
@@ -98,7 +105,9 @@ jest.mock("../logger.js", () => ({
 }));
 
 // Mock global fetch so checkStellarRpc always succeeds without network
-global.fetch = jest.fn().mockResolvedValue({ ok: true }) as jest.Mock;
+global.fetch = jest.fn(
+  async () => ({ ok: true }) as unknown as Response
+) as unknown as typeof fetch;
 
 // ── tests ─────────────────────────────────────────────────────────────────────
 
@@ -144,22 +153,16 @@ describe("GET /health/ready", () => {
   });
 
   it("returns 503 with error:timeout when DB hangs past 5 s", async () => {
-    jest.useFakeTimers();
-
     const { server, close } = startServer(makeDeps({ db: hangingPool(60_000) }));
     try {
-      const responsePromise = get(server, "/health/ready");
-
-      // Advance past the 5-second hard timeout used inside checkDatabase
-      jest.advanceTimersByTime(5_100);
-
-      const { status, body } = await responsePromise;
+      // Use real timers: the handler's 5s abort timer fires naturally even
+      // though the mocked SELECT 1 never resolves.
+      const { status, body } = await get(server, "/health/ready");
       const checks = (body as Record<string, unknown>).checks as Record<string, unknown>;
       expect(status).toBe(503);
       expect(checks.database).toMatchObject({ status: "down", error: "timeout" });
     } finally {
       await close();
-      jest.useRealTimers();
     }
   }, 15_000);
 
@@ -171,7 +174,7 @@ describe("GET /health/ready", () => {
       expect(status).toBe(503);
       expect((body as Record<string, unknown>).status).toBe("not_ready");
       // Pool.connect must never be called during the shutdown fast-path
-      expect((pool.connect as jest.Mock).mock.calls.length).toBe(0);
+      expect((pool.connect as unknown as jest.Mock).mock.calls.length).toBe(0);
     } finally {
       await close();
     }

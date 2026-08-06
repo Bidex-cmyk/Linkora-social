@@ -371,7 +371,11 @@ function generateClient(
   const isReadName = (name: string) => READ_PREFIXES.some((p) => name.startsWith(p));
 
   const readMethods = functions.filter(
-    (f) => f.outputs.length > 0 && f.outputs[0].type !== "void" && isReadName(f.name) && !FORCE_WRITE.has(f.name)
+    (f) =>
+      f.outputs.length > 0 &&
+      f.outputs[0].type !== "void" &&
+      isReadName(f.name) &&
+      !FORCE_WRITE.has(f.name)
   );
   const writeMethods = functions.filter((f) => !readMethods.includes(f) || FORCE_WRITE.has(f.name));
 
@@ -633,7 +637,24 @@ function argToScVal(
 
 // ── Main ──────────────────────────────────────────────────────────────────
 
+function hasStellarCli(): boolean {
+  try {
+    execSync("command -v stellar", { stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function main() {
+  if (!hasStellarCli()) {
+    console.log(
+      "stellar-cli not installed; skipping Soroban spec codegen (generated bindings are committed).\n" +
+        "  Install with: cargo install --locked stellar-cli --version 22.8.1"
+    );
+    return;
+  }
+
   console.log("📦 Parsing contract ABI...");
   const { structs, enums, events, functions } = parseSpec();
 

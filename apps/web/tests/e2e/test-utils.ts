@@ -5,6 +5,24 @@ const MOCK_ADDRESS = "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";
 export async function injectWalletMock(page: Page): Promise<void> {
   await page.addInitScript((address) => {
     window.localStorage.setItem("linkora_guided_tour_dismissed", "true");
+    // Mark onboarding as complete so the OnboardingGuard never redirects
+    // connected test wallets to /onboarding (which covers the whole page and
+    // blocks clicks on the search suggestions dropdown).
+    window.localStorage.setItem(
+      "linkora_onboarding_state",
+      JSON.stringify({
+        isComplete: true,
+        currentStep: 5,
+        completedSteps: {
+          welcome: true,
+          profile: true,
+          follow: true,
+          notifications: true,
+          explore: true,
+        },
+        skipped: true,
+      })
+    );
     window.localStorage.setItem("linkora_wallet_public_key", address);
     window.localStorage.setItem("linkora_wallet_address", address);
     window.localStorage.setItem("linkora_wallet_network", "TESTNET");

@@ -181,8 +181,9 @@ export interface Database {
   }): Promise<{ posts: Post[]; total: number; hasMore: boolean }>;
   getFollowers(
     address: string,
-    opts: { limit: number; cursor?: number }
-  ): Promise<{ followers: string[]; total: number; nextCursor?: number }>;
+    limit: number,
+    offset: number
+  ): Promise<{ followers: string[]; total: number }>;
   getFollowing(
     address: string,
     limit: number,

@@ -29,6 +29,7 @@
   "devDependencies": {
     "@types/express": "5.0.3",
     "@types/jest": "29.5.14",
+    "@jest/globals": "29.7.0",
     "@types/node": "20.17.57",
     "@types/pg": "8.11.13",
     "pino-pretty": "^13.0.0",
@@ -48,13 +49,26 @@
     "extensionsToTreatAsEsm": [
       ".ts"
     ],
+    "transformIgnorePatterns": [
+      "/node_modules/(?!(.*@noble)/)"
+    ],
     "moduleNameMapper": {
       "^(\\.{1,2}/.*)\\.js$": "$1"
     },
-    "globals": {
-      "ts-jest": {
-        "useESM": true
-      }
+    "transform": {
+      "^.+\\.tsx?$": [
+        "ts-jest",
+        {
+          "useESM": true
+        }
+      ],
+      "^.+\\.js$": [
+        "ts-jest",
+        {
+          "useESM": false,
+          "isolatedModules": true
+        }
+      ]
     }
   }
 }

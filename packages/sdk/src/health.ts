@@ -61,6 +61,7 @@ export class ConnectionHealthMonitor {
   private listeners: ConnectionStatusCallback[] = [];
   private timer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
+  private hasChecked = false;
   private retryMetrics: RetryMetrics = emptyRetryMetrics();
 
   constructor(rpcUrl: string, config: HealthCheckConfig = {}) {
@@ -96,6 +97,7 @@ export class ConnectionHealthMonitor {
   start(): void {
     if (this.timer !== null) return; // already running
     this.stopped = false;
+    this.hasChecked = false;
     this.scheduleCheck(0);
   }
 
@@ -113,6 +115,7 @@ export class ConnectionHealthMonitor {
     this.stop();
     this.listeners = [];
     this.status = "disconnected";
+    this.hasChecked = false;
     this.retryMetrics = emptyRetryMetrics();
     this._currentBackoff = 0;
   }
@@ -127,10 +130,13 @@ export class ConnectionHealthMonitor {
     const ok = await this.healthCheck();
     const next: ConnectionStatus = ok ? "connected" : "disconnected";
 
-    if (next !== this.status) {
+    // Always emit the result of the first check so callers observe the
+    // initial connection state even when the RPC is unreachable from the start.
+    if (!this.hasChecked || next !== this.status) {
       this.status = next;
       for (const cb of this.listeners) cb(this.status);
     }
+    this.hasChecked = true;
 
     if (!this.stopped) {
       this.scheduleCheck(ok ? this.intervalMs : this.nextBackoff());
@@ -199,8 +205,14 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new TimeoutError(message, { timeoutMs: ms })), ms);
     promise.then(
-      (value) => { clearTimeout(timer); resolve(value); },
-      (err) => { clearTimeout(timer); reject(err); }
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
     );
   });
 }

@@ -1,6 +1,20 @@
 import { createNotificationsRouter } from "../notifications";
 import { NotificationService } from "../../../notifications/service";
 
+jest.mock("../../../middleware/stellarAuth", () => ({
+  requireStellarAuth: (
+    req: { body?: Record<string, unknown> },
+    _res: unknown,
+    next: () => void
+  ) => {
+    req.body ??= {};
+    (req as Record<string, unknown>).context = {
+      stellarAddress: req.body.address,
+    };
+    next();
+  },
+}));
+
 function createMockResponse() {
   const res = {
     status: jest.fn().mockReturnThis(),
@@ -20,6 +34,9 @@ async function invokeRoute(
 
   const res = createMockResponse();
   const stack = layer.route.stack;
+
+  req.headers = {};
+  req.ip = "127.0.0.1";
 
   let i = 0;
   const next = () => {

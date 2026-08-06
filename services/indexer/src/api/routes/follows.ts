@@ -20,7 +20,7 @@ export function createFollowsRouter(db: Database): Router {
       const { limit, cursor } = req.query as unknown as z.infer<typeof cursorPaginationSchema>;
 
       // Convert cursor to offset (cursor represents the offset for pagination)
-      const offset = cursor ? parseInt(cursor, 10) : 0;
+      const offset = cursor ?? 0;
       const { followers, total } = await db.getFollowers(address, limit, offset);
 
       // Calculate next cursor based on current offset + results count
@@ -46,7 +46,7 @@ export function createFollowsRouter(db: Database): Router {
       const { limit, cursor } = req.query as unknown as z.infer<typeof cursorPaginationSchema>;
 
       // Convert cursor to offset (cursor represents the offset for pagination)
-      const offset = cursor ? parseInt(cursor, 10) : 0;
+      const offset = cursor ?? 0;
       const { following, total } = await db.getFollowing(address, limit, offset);
 
       // Calculate next cursor based on current offset + results count

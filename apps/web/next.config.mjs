@@ -19,6 +19,10 @@ const nextConfig = {
       __dirname,
       '../../packages/sdk/src',
     );
+    // The SDK source uses ESM `.js` specifiers (which become `.ts` files here).
+    config.resolve.extensionAlias = {
+      '.js': ['.ts', '.tsx', '.js'],
+    };
     return config;
   },
 };

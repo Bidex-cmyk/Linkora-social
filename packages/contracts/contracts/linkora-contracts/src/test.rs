@@ -6095,7 +6095,7 @@ fn batch_bump_user_graph_returns_positive_for_existing_user() {
 
     // Existing user should be processed successfully.
     // The exact number bumped depends on current TTLs.
-    assert!(bumped >= 0);
+    assert!(bumped > 0);
 }
 
 #[test]

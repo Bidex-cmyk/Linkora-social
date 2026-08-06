@@ -29,6 +29,11 @@ import { requestLoggingMiddleware } from "../../logger";
 import { rateLimitRead, rateLimitWrite, resetRateLimiter, RateLimiter } from "../rateLimit";
 import { requireStellarAuth } from "../stellarAuth";
 
+// Generous default timeout: this suite issues ~400 HTTP requests and is run
+// concurrently (via turbo) with the cargo test suite on 2-core CI runners, so
+// event-loop stalls can easily exceed Jest's 5s default.
+jest.setTimeout(30_000);
+
 // ── Mock @stellar/stellar-sdk to avoid ESM dep chain ─────────────────────────
 //
 // The middleware uses Keypair.fromPublicKey(address).verifyHash(hash, sigBuf).

@@ -173,10 +173,18 @@ describe("backfillStartupGap — 100-ledger gap recovery", () => {
     let fetchCalls = 0;
     const fetchImpl = (async (_url: string, opts: RequestInit) => {
       fetchCalls++;
-      const body = JSON.parse(opts.body as string) as { params?: { startLedger?: number; pagination?: { cursor?: string } } };
-      const startLedger = body.params?.startLedger ?? 0;
-      // Return events for the requested range (max 100 per page)
-      const page = gapEvents.filter((e) => e.ledger! >= startLedger);
+      const body = JSON.parse(opts.body as string) as {
+        params?: { startLedger?: number; pagination?: { cursor?: string } };
+      };
+      const cursor = body.params?.pagination?.cursor;
+      let page = gapEvents;
+      if (cursor) {
+        // Respect cursor-based pagination: only return events after it.
+        page = page.filter((e) => e.pagingToken! > cursor);
+      } else {
+        const startLedger = body.params?.startLedger ?? 0;
+        page = page.filter((e) => e.ledger! >= startLedger);
+      }
       return {
         ok: true,
         status: 200,

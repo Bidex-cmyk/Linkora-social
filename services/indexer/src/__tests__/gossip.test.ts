@@ -42,10 +42,14 @@ describe("gossip divergence detection", () => {
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
 
     const ac = new AbortController();
-    // Run one cycle then abort.
+    // Run the loop until the divergence log appears (bounded wait), then abort.
     const promise = startGossip(pg, ac.signal);
-    // Wait for the timer (1ms) + async work to complete.
-    await new Promise((r) => setTimeout(r, 100));
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const seen = logSpy.mock.calls.map((c) => c.join(" "));
+      if (seen.some((l) => l.includes("DIVERGENCE_DETECTED"))) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
     ac.abort();
     await promise;
 
@@ -56,7 +60,7 @@ describe("gossip divergence detection", () => {
     delete process.env["INDEXER_PEERS"];
     delete process.env["DIVERGENCE_THRESHOLD"];
     delete process.env["GOSSIP_INTERVAL_MS"];
-  });
+  }, 10_000);
 });
 
 // ── Test: self-fencing ────────────────────────────────────────────────────────
@@ -113,5 +117,5 @@ describe("gossip self-fencing", () => {
 
     expect(res.status).toBe(503);
     expect(res.body).toMatchObject({ error: { code: "SELF_FENCED" } });
-  });
+  }, 30_000);
 });

@@ -98,10 +98,7 @@ test.describe("Search Suggestions", () => {
     await searchBox.focus();
     await searchBox.fill("ali");
 
-    // Wait for debounce and API call
-    await page.waitForTimeout(400);
-
-    // Should show profile suggestions
+    // Should show profile suggestions (auto-waits for the debounce + API call)
     const suggestions = page.locator("#search-suggestions");
     await expect(suggestions.filter({ hasText: "Alice Wonder" })).toBeVisible();
     await expect(suggestions.filter({ hasText: "Alice Developer" })).toBeVisible();
@@ -113,7 +110,6 @@ test.describe("Search Suggestions", () => {
 
     await searchBox.focus();
     await searchBox.fill("alice");
-    await page.waitForTimeout(400);
 
     // Check for highlighted text
     const suggestions = page.locator("#search-suggestions");
@@ -125,13 +121,15 @@ test.describe("Search Suggestions", () => {
 
     await searchBox.focus();
     await searchBox.fill("ali");
-    await page.waitForTimeout(400);
 
-    // Click on the first suggestion
-    await page
+    // Wait for the suggestion to render (auto-waits; robust to slow CI)
+    const option = page
       .locator('#search-suggestions [role="option"]')
-      .filter({ hasText: "Alice Wonder" })
-      .click();
+      .filter({ hasText: "Alice Wonder" });
+    await expect(option).toBeVisible();
+
+    // Click on the suggestion
+    await option.click();
 
     // Should navigate to search results
     await expect(page).toHaveURL(/\/search\?q=Alice(%20|\+)Wonder/);
@@ -142,7 +140,9 @@ test.describe("Search Suggestions", () => {
 
     await searchBox.focus();
     await searchBox.fill("ali");
-    await page.waitForTimeout(400);
+
+    // Wait for the dropdown to render before navigating with the keyboard
+    await expect(page.locator('#search-suggestions [role="option"]').first()).toBeVisible();
 
     // Navigate down
     await searchBox.press("ArrowDown");
@@ -163,7 +163,6 @@ test.describe("Search Suggestions", () => {
 
     await searchBox.focus();
     await searchBox.fill("ali");
-    await page.waitForTimeout(400);
 
     await expect(
       page.locator("#search-suggestions").filter({ hasText: "Alice Wonder" })
@@ -244,7 +243,6 @@ test.describe("Search Suggestions", () => {
 
     await searchBox.focus();
     await searchBox.fill("ali");
-    await page.waitForTimeout(400);
 
     await expect(
       page.locator("#search-suggestions").filter({ hasText: "Alice Wonder" })
@@ -284,9 +282,12 @@ test.describe("Search Suggestions", () => {
     await searchBox.focus();
     await searchBox.fill("persistent search");
     await searchButton.click();
+    await expect(page).toHaveURL(/\/search/);
 
-    // Reload the page
+    // Wait for hydration so the recent-searches state is loaded, then reload.
+    await expect(page.locator('[data-testid="wallet-address"]').first()).toBeVisible();
     await page.reload();
+    await expect(page.locator('[data-testid="wallet-address"]').first()).toBeVisible();
 
     // Focus search bar
     const reloadedSearchBox = page.getByRole("search").first().locator("input");

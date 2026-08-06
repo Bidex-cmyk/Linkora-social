@@ -30,5 +30,10 @@ package-lock.json
 apps/mobile/android/
 apps/mobile/ios/
 
+# Local app logs / test artifacts
+apps/mobile/.expo/
+apps/web/test-results/
+packages/sdk/docs/
+
 app/apps/mobile/components/__snapshots__/
 app/apps/mobile/components/__tests__/

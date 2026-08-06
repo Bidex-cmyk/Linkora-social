@@ -4,8 +4,9 @@ import { GracefulShutdown } from "../graceful-shutdown";
 import { WsHandle } from "../ws";
 import { WebSocketServer } from "ws";
 import request from "supertest";
-import { createApp, ShutdownState } from "../api";
+import { createApp } from "../api";
 import { Database } from "../db";
+import { HealthMonitor } from "../services/health-monitor";
 
 function mockPool(): Pool {
   return { end: jest.fn().mockResolvedValue(undefined) } as unknown as Pool;
@@ -205,14 +206,23 @@ describe("GracefulShutdown", () => {
 });
 
 describe("createApp shutdown middleware", () => {
+  function mockMonitor(ready = true): HealthMonitor {
+    return {
+      checkReadiness: jest.fn().mockResolvedValue({
+        ready,
+        checks: undefined,
+      }),
+    } as unknown as HealthMonitor;
+  }
+
   it("rejects new requests with 503 during shutdown", async () => {
-    const shutdownState: ShutdownState = { isShuttingDown: () => false };
-    const app = createApp(mockDb(), undefined, shutdownState);
+    const shutdownFlag = { active: false };
+    const app = createApp(mockDb(), undefined, mockMonitor(true), shutdownFlag);
 
     const res1 = await request(app).get("/health/ready");
     expect(res1.status).toBe(200);
 
-    shutdownState.isShuttingDown = () => true;
+    shutdownFlag.active = true;
 
     const res2 = await request(app).get("/health/ready");
     expect(res2.status).toBe(503);
@@ -220,8 +230,8 @@ describe("createApp shutdown middleware", () => {
   });
 
   it("returns 503 on /health during shutdown", async () => {
-    const shutdownState: ShutdownState = { isShuttingDown: () => true };
-    const app = createApp(mockDb(), undefined, shutdownState);
+    const shutdownFlag = { active: true };
+    const app = createApp(mockDb(), undefined, mockMonitor(true), shutdownFlag);
 
     const res = await request(app).get("/health");
     expect(res.status).toBe(503);
@@ -229,8 +239,8 @@ describe("createApp shutdown middleware", () => {
   });
 
   it("returns 503 on /health/live during shutdown", async () => {
-    const shutdownState: ShutdownState = { isShuttingDown: () => true };
-    const app = createApp(mockDb(), undefined, shutdownState);
+    const shutdownFlag = { active: true };
+    const app = createApp(mockDb(), undefined, mockMonitor(true), shutdownFlag);
 
     const res = await request(app).get("/health/live");
     expect(res.status).toBe(503);
@@ -238,8 +248,8 @@ describe("createApp shutdown middleware", () => {
   });
 
   it("rejects API routes with 503 during shutdown", async () => {
-    const shutdownState: ShutdownState = { isShuttingDown: () => true };
-    const app = createApp(mockDb(), undefined, shutdownState);
+    const shutdownFlag = { active: true };
+    const app = createApp(mockDb(), undefined, mockMonitor(true), shutdownFlag);
 
     const res = await request(app).get("/api/profiles/test");
     expect(res.status).toBe(503);

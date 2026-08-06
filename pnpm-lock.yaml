@@ -363,6 +363,9 @@ importers:
         specifier: ^3.24.4
         version: 3.25.76
     devDependencies:
+      "@jest/globals":
+        specifier: 29.7.0
+        version: 29.7.0
       "@types/express":
         specifier: 5.0.3
         version: 5.0.3
@@ -548,6 +551,9 @@ importers:
       "@types/node":
         specifier: ^20.14.0
         version: 20.19.39
+      "@types/node-cron":
+        specifier: ^3.0.11
+        version: 3.0.11
       "@types/node-fetch":
         specifier: ^2.6.13
         version: 2.6.13
@@ -16009,9 +16015,7 @@ snapshots:
       metro-runtime: 0.84.4
     transitivePeerDependencies:
       - "@babel/core"
-      - bufferutil
       - supports-color
-      - utf-8-validate
 
   "@react-native/normalize-colors@0.86.0": {}
 
