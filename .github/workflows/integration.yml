@@ -41,7 +41,7 @@ jobs:
       - name: Install stellar-cli
         run: |
           curl -fsSL -o /tmp/stellar-cli.tar.gz \
-            https://github.com/stellar/stellar-cli/releases/download/v22.8.1/stellar-cli-22.8.1-x86_64-unknown-linux-gnu.tar.gz
+            https://github.com/stellar/stellar-cli/releases/download/v27.1.0/stellar-cli-27.1.0-x86_64-unknown-linux-gnu.tar.gz
           sudo tar -xzf /tmp/stellar-cli.tar.gz -C /usr/local/bin stellar
           sudo chmod +x /usr/local/bin/stellar
           stellar --version

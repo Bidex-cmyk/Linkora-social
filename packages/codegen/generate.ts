@@ -650,7 +650,7 @@ function main() {
   if (!hasStellarCli()) {
     console.log(
       "stellar-cli not installed; skipping Soroban spec codegen (generated bindings are committed).\n" +
-        "  Install with: cargo install --locked stellar-cli --version 22.8.1"
+        "  Install with: cargo install --locked stellar-cli --version 27.1.0"
     );
     return;
   }

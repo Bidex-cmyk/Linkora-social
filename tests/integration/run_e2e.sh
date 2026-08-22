@@ -21,7 +21,7 @@
 
 set -euo pipefail
 
-REQUIRED_STELLAR_VERSION="22.8.1"
+REQUIRED_STELLAR_VERSION="27.1.0"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_FILE="$ROOT_DIR/tests/integration/docker-compose.test.yml"
 PROJECT="linkora-e2e"
