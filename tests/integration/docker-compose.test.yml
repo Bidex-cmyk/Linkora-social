@@ -17,7 +17,9 @@ services:
   stellar:
     image: stellar/quickstart:latest
     platform: linux/amd64
-    command: ["--local"]
+    # Unlimited Soroban resource limits: this is an ephemeral test network,
+    # not a mainnet-parity environment.
+    command: ["--local", "--limits", "unlimited"]
     ports:
       - "8000:8000" # Horizon API + RPC + friendbot
       - "11626:11626" # Stellar peer-to-peer
