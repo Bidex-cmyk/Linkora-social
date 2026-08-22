@@ -15,7 +15,14 @@ import { execSync, spawnSync } from "child_process";
 import path from "path";
 import fs from "fs";
 import { createHash } from "crypto";
-import { Keypair, Account, nativeToScVal, xdr, rpc as StellarRpc } from "@stellar/stellar-sdk";
+import {
+  Asset,
+  Keypair,
+  Account,
+  nativeToScVal,
+  xdr,
+  rpc as StellarRpc,
+} from "@stellar/stellar-sdk";
 
 // sha256 helper using Node's built-in crypto (no extra dependency needed).
 function sha256(data: Uint8Array): Uint8Array {
@@ -281,25 +288,15 @@ export function deployContract(
 }
 
 export function deployNativeToken(
-  sourceAccountName: string = "e2e-issuer",
-  cfgDir: string = TEST_CONFIG.cfgDir,
-  rpcUrl: string = TEST_CONFIG.rpcUrl,
+  _sourceAccountName: string = "e2e-issuer",
+  _cfgDir: string = TEST_CONFIG.cfgDir,
+  _rpcUrl: string = TEST_CONFIG.rpcUrl,
   networkPassphrase: string = TEST_CONFIG.networkPassphrase
 ): string {
-  const result = execSync(
-    `stellar --config-dir "${cfgDir}" contract asset deploy ` +
-      `--network local --source-account ${sourceAccountName} --asset native`,
-    {
-      encoding: "utf-8",
-      timeout: 30_000,
-      env: {
-        ...process.env,
-        STELLAR_RPC_URL: rpcUrl,
-        STELLAR_NETWORK_PASSPHRASE: networkPassphrase,
-      },
-    }
-  );
-  return result.trim();
+  // Modern standalone networks pre-deploy the native asset SAC (deploying it
+  // again fails with Error(Storage, ExistingValue)), and its contract ID is
+  // deterministic anyway — compute it instead of deploying.
+  return Asset.native().contractId(networkPassphrase);
 }
 
 export function initializeContract(
