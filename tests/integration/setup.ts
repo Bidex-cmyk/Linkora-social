@@ -245,7 +245,12 @@ export function buildContractWasm(projectRoot: string = TEST_CONFIG.projectRoot)
     throw new Error(`Contract build failed: ${result.stderr?.toString() || "unknown"}`);
   }
 
-  const wasmPath = path.join(contractDir, "target/wasm32v1-none/release/linkora_contracts.wasm");
+  // cargo places artefacts in the WORKSPACE target dir (packages/contracts/target),
+  // not inside the crate directory.
+  const wasmPath = path.join(
+    projectRoot,
+    "packages/contracts/target/wasm32v1-none/release/linkora_contracts.wasm"
+  );
   console.log(`[setup] Contract WASM built at ${wasmPath}`);
   return wasmPath;
 }
