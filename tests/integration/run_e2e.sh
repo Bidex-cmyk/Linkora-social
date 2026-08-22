@@ -153,6 +153,8 @@ wait_for_healthy() {
     sleep 1
   done
   echo "  $service: NOT healthy after ${max_attempts}s"
+  echo "  ── $service logs (last 40 lines) ──" >&2
+  docker compose -p "$PROJECT" -f "$COMPOSE_FILE" logs --tail 40 "$service" 2>/dev/null || true
   return 1
 }
 
@@ -239,7 +241,9 @@ else
   info "  SKIP_BUILD=1, using existing WASM"
 fi
 
-WASM_PATH="$CONTRACT_DIR/target/wasm32v1-none/release/linkora_contracts.wasm"
+# stellar contract build places artefacts in the cargo WORKSPACE target dir
+# (packages/contracts/target), not inside the crate directory.
+WASM_PATH="$ROOT_DIR/packages/contracts/target/wasm32v1-none/release/linkora_contracts.wasm"
 if [[ ! -f "$WASM_PATH" ]]; then
   echo "error: wasm artifact not found at $WASM_PATH" >&2
   exit 1
