@@ -202,7 +202,7 @@ stellar --config-dir "$CFG_DIR" network add "$NETWORK" \
 # Generate and fund test accounts
 echo "  Generating funded identities..."
 for name in e2e-admin e2e-alice e2e-bob e2e-charlie e2e-issuer e2e-treasury; do
-  stellar --config-dir "$CFG_DIR" keys generate "$name" --overwrite --no-fund --network "$NETWORK" >/dev/null
+  stellar --config-dir "$CFG_DIR" keys generate "$name" --overwrite >/dev/null
   stellar --config-dir "$CFG_DIR" keys fund "$name" --network "$NETWORK" >/dev/null 2>&1 || {
     # Fallback: fund via friendbot API
     addr=$(stellar --config-dir "$CFG_DIR" keys address "$name")
