@@ -160,19 +160,23 @@ wait_for_healthy() {
 
 echo "  Waiting for Stellar sandbox (friendbot)..."
 
-# First wait for friendbot to actually serve requests (HTTP 200)
-FRIENDBOT_READY=0
+# Wait for the RPC getHealth endpoint (canonical readiness signal) and for
+# friendbot to answer requests. A parameter-less GET to friendbot returns
+# HTTP 400 once it is serving, so accept 200 or 400 there.
+SANDBOX_READY=0
 for i in $(seq 1 120); do
-  status=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:8000/friendbot" 2>/dev/null || true)
-  if [[ "$status" == "200" ]]; then
-    echo "  Stellar sandbox ready (friendbot HTTP $status)"
-    FRIENDBOT_READY=1
+  rpc=$(curl -s -X POST -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' "http://localhost:8000/rpc" 2>/dev/null || true)
+  fb_status=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:8000/friendbot" 2>/dev/null || true)
+  if [[ "$rpc" == *healthy* && ("$fb_status" == "200" || "$fb_status" == "400") ]]; then
+    echo "  Stellar sandbox ready (rpc healthy, friendbot HTTP $fb_status)"
+    SANDBOX_READY=1
     break
   fi
   sleep 1
 done
 
-if [[ $FRIENDBOT_READY -ne 1 ]]; then
+if [[ $SANDBOX_READY -ne 1 ]]; then
   echo "error: Stellar sandbox did not become ready in time" >&2
   exit 1
 fi
