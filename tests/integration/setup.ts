@@ -15,14 +15,7 @@ import { execSync, spawnSync } from "child_process";
 import path from "path";
 import fs from "fs";
 import { createHash } from "crypto";
-import {
-  Keypair,
-  Account,
-  nativeToScVal,
-  xdr,
-  Transaction,
-  rpc as StellarRpc,
-} from "@stellar/stellar-sdk";
+import { Keypair, Account, nativeToScVal, xdr, rpc as StellarRpc } from "@stellar/stellar-sdk";
 
 // sha256 helper using Node's built-in crypto (no extra dependency needed).
 function sha256(data: Uint8Array): Uint8Array {
@@ -45,8 +38,7 @@ export const TEST_CONFIG = {
   horizonUrl: process.env.E2E_HORIZON_URL || "http://localhost:8000",
   indexerUrl: process.env.E2E_INDEXER_URL || "http://localhost:3000",
   relayUrl: process.env.E2E_RELAY_URL || "http://localhost:3001",
-  networkPassphrase:
-    process.env.E2E_NETWORK_PASSPHRASE || "Standalone Network ; February 2017",
+  networkPassphrase: process.env.E2E_NETWORK_PASSPHRASE || "Standalone Network ; February 2017",
   contractId: process.env.CONTRACT_ID || "",
   tokenId: process.env.TOKEN_ID || "",
   cfgDir: process.env.E2E_CFG_DIR || "",
@@ -271,7 +263,11 @@ export function deployContract(
     {
       encoding: "utf-8",
       timeout: 120_000,
-      env: { ...process.env, STELLAR_RPC_URL: rpcUrl, STELLAR_NETWORK_PASSPHRASE: networkPassphrase },
+      env: {
+        ...process.env,
+        STELLAR_RPC_URL: rpcUrl,
+        STELLAR_NETWORK_PASSPHRASE: networkPassphrase,
+      },
     }
   );
   const contractId = result.trim();
@@ -291,7 +287,11 @@ export function deployNativeToken(
     {
       encoding: "utf-8",
       timeout: 30_000,
-      env: { ...process.env, STELLAR_RPC_URL: rpcUrl, STELLAR_NETWORK_PASSPHRASE: networkPassphrase },
+      env: {
+        ...process.env,
+        STELLAR_RPC_URL: rpcUrl,
+        STELLAR_NETWORK_PASSPHRASE: networkPassphrase,
+      },
     }
   );
   return result.trim();
@@ -314,7 +314,11 @@ export function initializeContract(
     {
       encoding: "utf-8",
       timeout: 30_000,
-      env: { ...process.env, STELLAR_RPC_URL: rpcUrl, STELLAR_NETWORK_PASSPHRASE: networkPassphrase },
+      env: {
+        ...process.env,
+        STELLAR_RPC_URL: rpcUrl,
+        STELLAR_NETWORK_PASSPHRASE: networkPassphrase,
+      },
     }
   );
   console.log(`[setup] Contract initialized`);
@@ -338,7 +342,11 @@ export function invokeContract(
     {
       encoding: "utf-8",
       timeout: 30_000,
-      env: { ...process.env, STELLAR_RPC_URL: rpcUrl, STELLAR_NETWORK_PASSPHRASE: networkPassphrase },
+      env: {
+        ...process.env,
+        STELLAR_RPC_URL: rpcUrl,
+        STELLAR_NETWORK_PASSPHRASE: networkPassphrase,
+      },
     }
   );
   return result.trim();
@@ -414,20 +422,14 @@ export async function pollIndexer<T>(
 
 /** Poll the indexer until a profile exists. */
 export async function pollForProfile(address: string): Promise<IndexerResponse["data"]> {
-  return pollIndexer(
-    `/api/profiles/${address}`,
-    (data) => data !== null,
-    { label: `profile ${address}` }
-  );
+  return pollIndexer(`/api/profiles/${address}`, (data) => data !== null, {
+    label: `profile ${address}`,
+  });
 }
 
 /** Poll the indexer until a post exists. */
 export async function pollForPost(postId: string | number): Promise<IndexerResponse["data"]> {
-  return pollIndexer(
-    `/api/posts/${postId}`,
-    (data) => data !== null,
-    { label: `post ${postId}` }
-  );
+  return pollIndexer(`/api/posts/${postId}`, (data) => data !== null, { label: `post ${postId}` });
 }
 
 /**
@@ -450,7 +452,8 @@ export async function pollContractState<T>(
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const data = await fn();
     if (predicate(data)) {
-      if (attempt > 0) console.log(`  [poll] ${label}: condition met after ${attempt + 1} attempts`);
+      if (attempt > 0)
+        console.log(`  [poll] ${label}: condition met after ${attempt + 1} attempts`);
       return data;
     }
     await sleep(Math.min(baseDelayMs * Math.pow(1.5, attempt), 5000));
@@ -471,7 +474,13 @@ export async function getContractProfile(
 export async function getContractPost(
   postId: number | bigint,
   contractId: string = TEST_CONFIG.contractId
-): Promise<{ id: bigint; author: string; content: string; tip_total: bigint; like_count: bigint } | null> {
+): Promise<{
+  id: bigint;
+  author: string;
+  content: string;
+  tip_total: bigint;
+  like_count: bigint;
+} | null> {
   return createSdkClient(contractId).getPost(postId);
 }
 
@@ -482,7 +491,8 @@ export function cleanupIdentities(names: string[], cfgDir: string = TEST_CONFIG.
   for (const name of names) {
     try {
       execSync(`stellar --config-dir "${cfgDir}" keys rm "${name}"`, {
-        encoding: "utf-8", timeout: 5_000,
+        encoding: "utf-8",
+        timeout: 5_000,
       });
     } catch {
       // Best-effort
@@ -527,26 +537,35 @@ export async function bootstrap(): Promise<{
 
   // Generate and fund accounts
   console.log("[bootstrap] Generating and funding test accounts...");
-  const accountNames = ["e2e-admin", "e2e-alice", "e2e-bob", "e2e-charlie", "e2e-issuer", "e2e-treasury"];
+  const accountNames = [
+    "e2e-admin",
+    "e2e-alice",
+    "e2e-bob",
+    "e2e-charlie",
+    "e2e-issuer",
+    "e2e-treasury",
+  ];
 
   for (const name of accountNames) {
-    execSync(
-      `stellar --config-dir "${cfgDir}" keys generate "${name}" --overwrite --no-fund --network local`,
-      { encoding: "utf-8", timeout: 10_000 }
-    );
+    execSync(`stellar --config-dir "${cfgDir}" keys generate "${name}" --overwrite`, {
+      encoding: "utf-8",
+      timeout: 10_000,
+    });
   }
   for (const name of accountNames) {
-    execSync(
-      `stellar --config-dir "${cfgDir}" keys fund "${name}" --network local`,
-      {
-        encoding: "utf-8", timeout: 30_000,
-        env: { ...process.env, STELLAR_RPC_URL: rpcUrl, STELLAR_NETWORK_PASSPHRASE: netPhrase },
-      }
-    );
+    execSync(`stellar --config-dir "${cfgDir}" keys fund "${name}" --network local`, {
+      encoding: "utf-8",
+      timeout: 30_000,
+      env: { ...process.env, STELLAR_RPC_URL: rpcUrl, STELLAR_NETWORK_PASSPHRASE: netPhrase },
+    });
   }
 
-  const adminAddr = execSync(`stellar --config-dir "${cfgDir}" keys address e2e-admin`, { encoding: "utf-8" }).trim();
-  const treasuryAddr = execSync(`stellar --config-dir "${cfgDir}" keys address e2e-treasury`, { encoding: "utf-8" }).trim();
+  const adminAddr = execSync(`stellar --config-dir "${cfgDir}" keys address e2e-admin`, {
+    encoding: "utf-8",
+  }).trim();
+  const treasuryAddr = execSync(`stellar --config-dir "${cfgDir}" keys address e2e-treasury`, {
+    encoding: "utf-8",
+  }).trim();
 
   // Build and deploy
   const wasmPath = buildContractWasm(projectRoot);
@@ -556,7 +575,16 @@ export async function bootstrap(): Promise<{
   const tokenId = deployNativeToken("e2e-issuer", cfgDir, rpcUrl, netPhrase);
   TEST_CONFIG.tokenId = tokenId;
 
-  initializeContract(contractId, adminAddr, treasuryAddr, 0, "e2e-admin", cfgDir, rpcUrl, netPhrase);
+  initializeContract(
+    contractId,
+    adminAddr,
+    treasuryAddr,
+    0,
+    "e2e-admin",
+    cfgDir,
+    rpcUrl,
+    netPhrase
+  );
 
   // Wait for indexer
   console.log("[bootstrap] Waiting for indexer to be ready...");
