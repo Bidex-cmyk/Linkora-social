@@ -355,13 +355,19 @@ for test_file in "${TEST_FILES[@]}"; do
   info "═══ Running: $test_name ═══"
 
   set +e
+  # jest is not a root dependency; borrow the indexer's installation and pin
+  # rootDir explicitly since pnpm exec starts inside the package directory.
   if [[ "$VERBOSE" == "1" ]]; then
-    npx jest --config "$JEST_CONFIG" "$ROOT_DIR/$test_file" \
+    pnpm --filter @linkora/indexer exec jest --config "$JEST_CONFIG" \
+      --rootDir "$ROOT_DIR" \
+      "$ROOT_DIR/$test_file" \
       --verbose \
       --bail \
       --testTimeout "$TIMEOUT"
   else
-    npx jest --config "$JEST_CONFIG" "$ROOT_DIR/$test_file" \
+    pnpm --filter @linkora/indexer exec jest --config "$JEST_CONFIG" \
+      --rootDir "$ROOT_DIR" \
+      "$ROOT_DIR/$test_file" \
       --bail \
       --testTimeout "$TIMEOUT"
   fi
