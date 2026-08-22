@@ -288,6 +288,11 @@ echo "  Contract initialized"
 
 step "Phase 5/6: Waiting for indexer to sync"
 
+# The indexer needs the deployed contract ID; recreate it now that one exists.
+info "  Restarting indexer with deployed contract..."
+CONTRACT_ID="$CONTRACT_ID" docker compose -p "$PROJECT" -f "$COMPOSE_FILE" \
+  up -d --no-deps --force-recreate indexer
+
 echo "  Contract ID: $CONTRACT_ID"
 echo "  Token ID: $TOKEN_ID"
 

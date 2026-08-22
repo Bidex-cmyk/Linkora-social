@@ -588,12 +588,25 @@ export async function bootstrap(): Promise<{
     netPhrase
   );
 
+  // The indexer requires CONTRACT_ID but compose started it before any
+  // contract existed. Recreate it against this suite's fresh deployment.
+  console.log("[bootstrap] Restarting indexer with deployed contract...");
+  const composeFile = path.join(projectRoot, "tests/integration/docker-compose.test.yml");
+  execSync(
+    `docker compose -p linkora-e2e -f "${composeFile}" up -d --no-deps --force-recreate indexer`,
+    {
+      encoding: "utf-8",
+      timeout: 180_000,
+      env: { ...process.env, CONTRACT_ID: contractId },
+    }
+  );
+
   // Wait for indexer
   console.log("[bootstrap] Waiting for indexer to be ready...");
   await retry(
     () => indexerFetch("/health/ready"),
     (r) => r.ok && r.status === 200,
-    { maxAttempts: 30, baseDelayMs: 1000, label: "indexer ready" }
+    { maxAttempts: 60, baseDelayMs: 1000, label: "indexer ready" }
   );
   console.log("[bootstrap] Indexer is ready.");
 
