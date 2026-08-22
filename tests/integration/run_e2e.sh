@@ -160,11 +160,11 @@ wait_for_healthy() {
 
 echo "  Waiting for Stellar sandbox (friendbot)..."
 
-# First wait for friendbot endpoint
+# First wait for friendbot to actually serve requests (HTTP 200)
 FRIENDBOT_READY=0
-for i in $(seq 1 90); do
+for i in $(seq 1 120); do
   status=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:8000/friendbot" 2>/dev/null || true)
-  if [[ -n "$status" && "$status" != "000" ]]; then
+  if [[ "$status" == "200" ]]; then
     echo "  Stellar sandbox ready (friendbot HTTP $status)"
     FRIENDBOT_READY=1
     break
@@ -200,14 +200,23 @@ stellar --config-dir "$CFG_DIR" network add "$NETWORK" \
   --network-passphrase "$NETWORK_PASSPHRASE" 2>/dev/null || true
 
 # Generate and fund test accounts
+fund_account() {
+  local name="$1" addr="$2"
+  if stellar --config-dir "$CFG_DIR" keys fund "$name" --network "$NETWORK" >/dev/null 2>&1; then
+    return 0
+  fi
+  curl -sf --retry 15 --retry-delay 2 --retry-all-errors \
+    "http://localhost:8000/friendbot?addr=${addr}" >/dev/null 2>&1
+}
+
 echo "  Generating funded identities..."
 for name in e2e-admin e2e-alice e2e-bob e2e-charlie e2e-issuer e2e-treasury; do
   stellar --config-dir "$CFG_DIR" keys generate "$name" --overwrite >/dev/null
-  stellar --config-dir "$CFG_DIR" keys fund "$name" --network "$NETWORK" >/dev/null 2>&1 || {
-    # Fallback: fund via friendbot API
-    addr=$(stellar --config-dir "$CFG_DIR" keys address "$name")
-    curl -s "http://localhost:8000/friendbot?addr=${addr}" >/dev/null
-  }
+  addr=$(stellar --config-dir "$CFG_DIR" keys address "$name")
+  if ! fund_account "$name" "$addr"; then
+    echo "error: failed to fund $name ($addr)" >&2
+    exit 1
+  fi
   echo "  Funded $name"
 done
 
