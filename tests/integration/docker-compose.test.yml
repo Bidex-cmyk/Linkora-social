@@ -55,8 +55,8 @@ services:
   # ── Indexer ──────────────────────────────────────────────────────────────────
   indexer:
     build:
-      context: ../../services/indexer
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: services/indexer/Dockerfile
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-linkora}:${POSTGRES_PASSWORD:-linkora}@postgres:5432/${POSTGRES_DB:-linkora}
@@ -88,8 +88,8 @@ services:
   # ── DM Relay ─────────────────────────────────────────────────────────────────
   dm-relay:
     build:
-      context: ../../services/dm-relay
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: services/dm-relay/Dockerfile
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-linkora}:${POSTGRES_PASSWORD:-linkora}@postgres:5432/${POSTGRES_DB:-linkora}_dm_relay
