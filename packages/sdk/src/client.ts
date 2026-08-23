@@ -7,6 +7,7 @@ import {
   TransactionBuilder,
   Account,
   Keypair,
+  Operation,
   StrKey,
   xdr,
 } from "@stellar/stellar-base";
@@ -344,19 +345,16 @@ export class LinkoraClient extends GeneratedLinkoraClient {
   ): Promise<Transaction> {
     const server = this.createRpcServer();
     const contract = new Contract(this._contractId);
-    const buildOp = () => contract.call(method, ...args);
 
-    const tempSource = Keypair.random();
-    const tempAccount = new Account(tempSource.publicKey(), "0");
-    const tempTx = new TransactionBuilder(tempAccount, {
+    const rawTx = new TransactionBuilder(sourceAccount, {
       fee: "100",
       networkPassphrase: this._networkPassphrase,
     })
-      .addOperation(buildOp())
+      .addOperation(contract.call(method, ...args))
       .setTimeout(DEFAULT_TIMEOUT)
       .build();
 
-    const simulationResult = await server.simulateTransaction(tempTx);
+    const simulationResult = await server.simulateTransaction(rawTx);
 
     if (isSimulationError(simulationResult)) {
       throw new SimulationError(
@@ -374,26 +372,9 @@ export class LinkoraClient extends GeneratedLinkoraClient {
       );
     }
 
-    const resourceFee = simulationResult.minResourceFee || "0";
-    const sorobanData = simulationResult.transactionData;
-
-    let builder = new TransactionBuilder(sourceAccount, {
-      fee: String(Number(resourceFee) + 100),
-      networkPassphrase: this._networkPassphrase,
-    })
-      .addOperation(buildOp())
-      .setTimeout(DEFAULT_TIMEOUT);
-
-    if (sorobanData) {
-      // stellar-sdk v15 parsers return a SorobanDataBuilder; unwrap the XDR.
-      const data = sorobanData as unknown as { build?: () => unknown };
-      builder = (
-        builder as unknown as { setSorobanData: (d: unknown) => typeof builder }
-      ).setSorobanData(data.build ? data.build() : sorobanData);
-    }
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (builder as any).build() as Transaction;
+    // assembleTransaction applies resource fees, soroban transaction data and
+    // the auth entries produced by simulation (required by require_auth()).
+    return rpc.assembleTransaction(rawTx, simulationResult).build() as Transaction;
   }
 
   /**
@@ -472,23 +453,43 @@ export class LinkoraClient extends GeneratedLinkoraClient {
       );
     }
 
-    const resourceFee = simulationResult.minResourceFee || "0";
-    const sorobanData = simulationResult.transactionData;
+    // rpc.assembleTransaction only supports single-invoke transactions, so for
+    // multi-op transactions apply each op's simulated auth entries manually.
+    const results = simulationResult.result ?? [];
 
     const realBuilder = new TransactionBuilder(sourceAccount, {
-      fee: String(Number(resourceFee) + 100),
+      fee: String(Number(simulationResult.minResourceFee || "0") + 100),
       networkPassphrase: this._networkPassphrase,
     });
-    for (const op of ops) {
-      realBuilder.addOperation(contract.call(op.method, ...op.args));
-    }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let readyBuilder: any = realBuilder.setTimeout(DEFAULT_TIMEOUT);
+    ops.forEach((opDef, i) => {
+      const func = xdr.HostFunction.hostFunctionTypeInvokeContract(
+        new xdr.InvokeContractArgs({
+          contractAddress: (
+            new Contract(this._contractId) as unknown as {
+              address(): { toScAddress(): xdr.ScAddress };
+            }
+          )
+            .address()
+            .toScAddress(),
+          functionName: opDef.method,
+          args: opDef.args,
+        })
+      );
+      const auth = (results as unknown as Array<{ auth?: xdr.SorobanAuthorizationEntry[] }>)[i]
+        ?.auth;
+      realBuilder.addOperation(
+        Operation.invokeHostFunction({
+          func,
+          auth: auth ?? [],
+        })
+      );
+    });
 
+    let readyBuilder = realBuilder.setTimeout(DEFAULT_TIMEOUT);
+
+    const sorobanData = simulationResult.transactionData;
     if (sorobanData) {
-      // stellar-sdk v15 parsers return a SorobanDataBuilder; unwrap the XDR.
-      const data = sorobanData as unknown as { build?: () => unknown };
-      readyBuilder = readyBuilder.setSorobanData(data.build ? data.build() : sorobanData);
+      readyBuilder = readyBuilder.setSorobanData(sorobanData.build());
     }
 
     return readyBuilder.build() as Transaction;
