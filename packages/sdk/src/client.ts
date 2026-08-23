@@ -385,8 +385,11 @@ export class LinkoraClient extends GeneratedLinkoraClient {
       .setTimeout(DEFAULT_TIMEOUT);
 
     if (sorobanData) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      builder = (builder as any).setSorobanData(sorobanData);
+      // stellar-sdk v15 parsers return a SorobanDataBuilder; unwrap the XDR.
+      const data = sorobanData as unknown as { build?: () => unknown };
+      builder = (
+        builder as unknown as { setSorobanData: (d: unknown) => typeof builder }
+      ).setSorobanData(data.build ? data.build() : sorobanData);
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -483,7 +486,9 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     let readyBuilder: any = realBuilder.setTimeout(DEFAULT_TIMEOUT);
 
     if (sorobanData) {
-      readyBuilder = readyBuilder.setSorobanData(sorobanData);
+      // stellar-sdk v15 parsers return a SorobanDataBuilder; unwrap the XDR.
+      const data = sorobanData as unknown as { build?: () => unknown };
+      readyBuilder = readyBuilder.setSorobanData(data.build ? data.build() : sorobanData);
     }
 
     return readyBuilder.build() as Transaction;
