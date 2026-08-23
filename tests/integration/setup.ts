@@ -110,20 +110,14 @@ export async function submitContractTx(
   const maxRetries = options.maxRetries ?? 5;
   const pollIntervalMs = options.pollIntervalMs ?? 2000;
 
-  // 1. Get the source account sequence
-  const accountData = await server.getAccount(keypair.publicKey());
-  const sourceAccount = new Account(keypair.publicKey(), String(accountData.sequence));
-
-  // 2. Prepare the transaction via SDK simulation
-  const tx = await client.prepareTransaction(method, sourceAccount, ...args);
-
-  // 3. Sign
-  tx.sign(keypair);
-
-  // 4. Submit (with retry for TRY_AGAIN_LATER)
+  // 1. Fetch the account fresh on every attempt (see retry loop below).
   let lastError: Error | null = null;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
+      const accountData = await server.getAccount(keypair.publicKey());
+      const sourceAccount = new Account(keypair.publicKey(), String(accountData.sequence));
+      const tx = await client.prepareTransaction(method, sourceAccount, ...args);
+      tx.sign(keypair);
       const sendResult = await server.sendTransaction(tx);
 
       if (sendResult.status === "PENDING" || sendResult.status === "TRY_AGAIN_LATER") {
