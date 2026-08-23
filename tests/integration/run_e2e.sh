@@ -289,8 +289,19 @@ echo "  Contract initialized"
 step "Phase 5/6: Waiting for indexer to sync"
 
 # The indexer needs the deployed contract ID; recreate it now that one exists.
+# Start streaming near the chain tip — a startLedger below the RPC's retention
+# floor is rejected outright.
 info "  Restarting indexer with deployed contract..."
-CONTRACT_ID="$CONTRACT_ID" docker compose -p "$PROJECT" -f "$COMPOSE_FILE" \
+CURRENT_LEDGER=$(curl -s -X POST "$RPC_URL" -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getLatestLedger"}' \
+  | grep -o '"sequence":[0-9]*' | head -1 | cut -d: -f2)
+if [[ -n "$CURRENT_LEDGER" && "$CURRENT_LEDGER" -gt 4 ]]; then
+  export E2E_START_LEDGER=$((CURRENT_LEDGER - 2))
+else
+  export E2E_START_LEDGER=2
+fi
+CONTRACT_ID="$CONTRACT_ID" E2E_START_LEDGER="$E2E_START_LEDGER" \
+  docker compose -p "$PROJECT" -f "$COMPOSE_FILE" \
   up -d --no-deps --force-recreate indexer
 
 echo "  Contract ID: $CONTRACT_ID"

@@ -582,15 +582,23 @@ export async function bootstrap(): Promise<{
   );
 
   // The indexer requires CONTRACT_ID but compose started it before any
-  // contract existed. Recreate it against this suite's fresh deployment.
+  // contract existed. Recreate it against this suite's fresh deployment,
+  // starting the stream near the chain tip (ledger retention would reject a
+  // startLedger below the RPC's oldest retained ledger).
   console.log("[bootstrap] Restarting indexer with deployed contract...");
   const composeFile = path.join(projectRoot, "tests/integration/docker-compose.test.yml");
+  const { sequence: latestLedger } = await getServer().getLatestLedger();
+  const startLedger = Math.max(2, latestLedger - 2);
   execSync(
     `docker compose -p linkora-e2e -f "${composeFile}" up -d --no-deps --force-recreate indexer`,
     {
       encoding: "utf-8",
       timeout: 180_000,
-      env: { ...process.env, CONTRACT_ID: contractId },
+      env: {
+        ...process.env,
+        CONTRACT_ID: contractId,
+        E2E_START_LEDGER: String(startLedger),
+      },
     }
   );
 
