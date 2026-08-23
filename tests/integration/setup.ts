@@ -13,7 +13,6 @@
 
 import { execSync, spawnSync } from "child_process";
 import path from "path";
-import fs from "fs";
 import { createHash } from "crypto";
 import {
   Asset,
@@ -612,15 +611,14 @@ export async function bootstrap(): Promise<{
 
   const sdk = createSdkClient(contractId, rpcUrl, netPhrase);
 
-  // Load Keypairs from Stellar CLI identity files.
-  // Stellar CLI stores secret_seed in identity JSON files as a hex string.
+  // Load Keypairs via the CLI: modern stellar-cli stores identities as TOML
+  // seed-phrase files, so let it derive the secret key for us.
   function loadKeypair(name: string): Keypair {
-    const keyPath = path.join(cfgDir, "identity", `${name}.json`);
-    const keyData = JSON.parse(fs.readFileSync(keyPath, "utf-8"));
-    const seedHex = keyData.secret_seed;
-    if (!seedHex) throw new Error(`No secret_seed found in ${keyPath}`);
-    const seedBytes = Buffer.from(seedHex, "hex");
-    return Keypair.fromRawEd25519Seed(seedBytes.slice(0, 32));
+    const secret = execSync(`stellar --config-dir "${cfgDir}" keys secret "${name}"`, {
+      encoding: "utf-8",
+    }).trim();
+    if (!secret.startsWith("S")) throw new Error(`No secret key found for ${name}`);
+    return Keypair.fromSecret(secret);
   }
 
   const accounts: TestAccounts = {
