@@ -83,7 +83,7 @@ const _serverCache = new Map<string, StellarRpc.Server>();
 
 function getServer(rpcUrl = TEST_CONFIG.rpcUrl): StellarRpc.Server {
   if (!_serverCache.has(rpcUrl)) {
-    _serverCache.set(rpcUrl, new StellarRpc.Server(rpcUrl));
+    _serverCache.set(rpcUrl, new StellarRpc.Server(rpcUrl, { allowHttp: true }));
   }
   return _serverCache.get(rpcUrl)!;
 }
