@@ -391,6 +391,12 @@ if [[ $FAILED -gt 0 ]]; then
   info "━━━ E2E Test Summary ━━━"
   echo -e "  ${GREEN}Passed: $PASSED${NC}  ${RED}Failed: $FAILED${NC}  ${YELLOW}Skipped: $SKIPPED${NC}"
   echo ""
+
+  # Dump service logs to make pipeline failures (e.g. missed events) diagnosable.
+  warn "Dumping service logs for diagnosis..."
+  docker compose -p "$PROJECT" -f "$COMPOSE_FILE" logs --tail 150 indexer || true
+  docker compose -p "$PROJECT" -f "$COMPOSE_FILE" logs --tail 50 dm-relay || true
+
   echo "  Some tests failed. See above for details."
   exit 1
 fi
