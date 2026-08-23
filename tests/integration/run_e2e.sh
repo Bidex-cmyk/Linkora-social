@@ -393,7 +393,7 @@ if [[ $FAILED -gt 0 ]]; then
   echo ""
 
   # Dump service logs to make pipeline failures (e.g. missed events) diagnosable.
-  warn "Dumping service logs for diagnosis..."
+  info "  Dumping service logs for diagnosis..."
   docker compose -p "$PROJECT" -f "$COMPOSE_FILE" logs --tail 150 indexer || true
   docker compose -p "$PROJECT" -f "$COMPOSE_FILE" logs --tail 50 dm-relay || true
 
