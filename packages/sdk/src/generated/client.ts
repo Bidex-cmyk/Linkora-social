@@ -74,15 +74,22 @@ export class GeneratedLinkoraClient {
   private contractId: string;
   private rpcUrl: string;
   private networkPassphrase: string;
+  private allowHttp: boolean;
 
-  constructor(config: { contractId: string; rpcUrl: string; networkPassphrase?: string }) {
+  constructor(config: {
+    contractId: string;
+    rpcUrl: string;
+    networkPassphrase?: string;
+    allowHttp?: boolean;
+  }) {
     this.contractId = config.contractId;
     this.rpcUrl = config.rpcUrl;
     this.networkPassphrase = config.networkPassphrase || DEFAULT_NETWORK;
+    this.allowHttp = config.allowHttp ?? config.rpcUrl.startsWith("http://");
   }
 
   private async simulateCall(method: string, ...args: xdr.ScVal[]): Promise<xdr.ScVal | null> {
-    const server = new rpc.Server(this.rpcUrl);
+    const server = new rpc.Server(this.rpcUrl, { allowHttp: this.allowHttp });
     const contract = new Contract(this.contractId);
     const op = contract.call(method, ...args);
     const source = Keypair.random();

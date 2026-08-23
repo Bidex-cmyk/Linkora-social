@@ -81,7 +81,9 @@ export class ConnectionHealthMonitor {
   /** Perform a single health check ping against the RPC endpoint. */
   async healthCheck(): Promise<boolean> {
     try {
-      const server = new rpc.Server(this.rpcUrl);
+      const server = new rpc.Server(this.rpcUrl, {
+        allowHttp: this.rpcUrl.startsWith("http://"),
+      });
       const result = await withTimeout(
         server.getLatestLedger(),
         this.pingTimeoutMs,

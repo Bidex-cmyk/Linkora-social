@@ -300,13 +300,15 @@ function generateClient(
   lines.push("  private contractId: string;");
   lines.push("  private rpcUrl: string;");
   lines.push("  private networkPassphrase: string;");
+  lines.push("  private allowHttp: boolean;");
   lines.push("");
   lines.push(
-    "  constructor(config: { contractId: string; rpcUrl: string; networkPassphrase?: string }) {"
+    "  constructor(config: { contractId: string; rpcUrl: string; networkPassphrase?: string; allowHttp?: boolean }) {"
   );
   lines.push("    this.contractId = config.contractId;");
   lines.push("    this.rpcUrl = config.rpcUrl;");
   lines.push("    this.networkPassphrase = config.networkPassphrase || DEFAULT_NETWORK;");
+  lines.push('    this.allowHttp = config.allowHttp ?? config.rpcUrl.startsWith("http://");');
   lines.push("  }");
   lines.push("");
 
@@ -314,7 +316,7 @@ function generateClient(
   lines.push(
     "  private async simulateCall(method: string, ...args: xdr.ScVal[]): Promise<xdr.ScVal | null> {"
   );
-  lines.push("    const server = new rpc.Server(this.rpcUrl);");
+  lines.push("    const server = new rpc.Server(this.rpcUrl, { allowHttp: this.allowHttp });");
   lines.push("    const contract = new Contract(this.contractId);");
   lines.push("    const op = contract.call(method, ...args);");
   lines.push("    const source = Keypair.random();");

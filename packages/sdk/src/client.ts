@@ -106,6 +106,11 @@ export interface ClientConfig {
   healthCheck?: HealthCheckConfig & { autoStart?: boolean };
   /** Timeout in ms for HTTP requests (default 30 000). */
   timeoutMs?: number;
+  /**
+   * Allow insecure `http://` RPC connections (local development networks).
+   * Defaults to true when `rpcUrl` starts with `http://`.
+   */
+  allowHttp?: boolean;
 }
 
 export interface DeployCreatorTokenParams {
@@ -135,22 +140,30 @@ export class LinkoraClient extends GeneratedLinkoraClient {
   private readonly _contractId: string;
   private readonly _healthMonitor: ConnectionHealthMonitor;
   private readonly _timeoutMs: number;
+  private readonly _allowHttp: boolean;
 
   constructor(config: ClientConfig) {
     super({
       contractId: config.contractId,
       rpcUrl: config.rpcUrl,
       networkPassphrase: config.networkPassphrase || DEFAULT_NETWORK,
+      allowHttp: config.allowHttp,
     });
     this._contractId = config.contractId;
     this.tokenFactoryId = config.tokenFactoryId;
     this._rpcUrl = config.rpcUrl;
     this._networkPassphrase = config.networkPassphrase || DEFAULT_NETWORK;
     this._timeoutMs = config.timeoutMs ?? 30_000;
+    this._allowHttp = config.allowHttp ?? config.rpcUrl.startsWith("http://");
 
     const { autoStart, ...healthCfg } = config.healthCheck ?? {};
     this._healthMonitor = new ConnectionHealthMonitor(this._rpcUrl, healthCfg);
     if (autoStart) this._healthMonitor.start();
+  }
+
+  /** Build an RPC server handle honoring the insecure-HTTP setting. */
+  private createRpcServer(): rpc.Server {
+    return new rpc.Server(this._rpcUrl, { allowHttp: this._allowHttp });
   }
 
   /**
@@ -237,7 +250,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
    * ```
    */
   async simulate(method: string, ...args: xdr.ScVal[]): Promise<SimulationResult> {
-    const server = new rpc.Server(this._rpcUrl);
+    const server = this.createRpcServer();
     const contract = new Contract(this._contractId);
     const buildOp = () => contract.call(method, ...args);
 
@@ -329,7 +342,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     sourceAccount: Account,
     ...args: xdr.ScVal[]
   ): Promise<Transaction> {
-    const server = new rpc.Server(this._rpcUrl);
+    const server = this.createRpcServer();
     const contract = new Contract(this._contractId);
     const buildOp = () => contract.call(method, ...args);
 
@@ -424,7 +437,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     sourceAccount: Account,
     ops: Array<{ method: string; args: xdr.ScVal[] }>
   ): Promise<Transaction> {
-    const server = new rpc.Server(this._rpcUrl);
+    const server = this.createRpcServer();
     const contract = new Contract(this._contractId);
 
     const tempSource = Keypair.random();
@@ -1537,7 +1550,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     method: string,
     ...args: xdr.ScVal[]
   ): Promise<xdr.ScVal | null> {
-    const server = new rpc.Server(this._rpcUrl);
+    const server = this.createRpcServer();
     const contract = new Contract(contractId);
     const op = contract.call(method, ...args);
 
