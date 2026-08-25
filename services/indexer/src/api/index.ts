@@ -26,6 +26,7 @@ import {
 } from "../notifications/service";
 import { PostgresDatabase } from "../postgres-db";
 import { HealthMonitor } from "../services/health-monitor";
+import { metricsText } from "../metrics";
 
 let warnedMissingAllowedOrigins = false;
 
@@ -103,6 +104,10 @@ export function createApp(
   const commit = process.env.COMMIT_SHA ?? "unknown";
   const monitor =
     healthMonitor ?? (pg ? new HealthMonitor(pg, process.env.STELLAR_RPC_URL ?? "") : undefined);
+
+  app.get("/metrics", (_req: Request, res: Response): void => {
+    res.type("text/plain").send(metricsText());
+  });
 
   app.get("/health", async (_req: Request, res: Response): Promise<void> => {
     const uptime = Math.floor((Date.now() - startTime) / 1000);
