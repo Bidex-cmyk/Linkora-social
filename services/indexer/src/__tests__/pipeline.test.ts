@@ -19,6 +19,7 @@ import {
   PgPoolLike,
   QueryResultLike,
 } from "../pipeline";
+import { serializationRetriesTotal } from "../metrics";
 
 type Store = {
   raw: Map<string, IngestEvent>;
@@ -121,6 +122,35 @@ class FakePool implements PgPoolLike {
   readonly committed = { value: emptyStore() };
   async connect(): Promise<PgClientLike> {
     return new FakeClient(this.committed);
+  }
+}
+
+class ConflictOncePool implements PgPoolLike {
+  readonly committed = { value: emptyStore() };
+  readonly beginStatements: string[] = [];
+  private conflictPending: boolean;
+
+  constructor(conflictPending = true) {
+    this.conflictPending = conflictPending;
+  }
+
+  async connect(): Promise<PgClientLike> {
+    const delegate = new FakeClient(this.committed);
+    return {
+      query: async (text: string, params?: unknown[]) => {
+        if (text.startsWith("BEGIN")) {
+          this.beginStatements.push(text);
+          if (this.conflictPending) {
+            this.conflictPending = false;
+            const error = new Error("serialization failure") as Error & { code: string };
+            error.code = "40001";
+            throw error;
+          }
+        }
+        return delegate.query(text, params);
+      },
+      release: () => delegate.release(),
+    };
   }
 }
 
@@ -261,5 +291,43 @@ describe("IngestPipeline — exactly-once", () => {
     expect(await pipeline.readCursor()).toBe(0);
     await pipeline.processBatch([makeEvent(42, 0, "erin")]);
     expect(await pipeline.readCursor()).toBe(42);
+  });
+
+  it("retries a serializable transaction after SQLSTATE 40001", async () => {
+    const pool = new ConflictOncePool();
+    const backoffs: number[] = [];
+    serializationRetriesTotal.reset();
+    const pipeline = new IngestPipeline(pool, {
+      streamId: "C123",
+      bus: new EventBus(),
+      transactionIsolation: "serializable",
+      serializationRetryAttempts: 3,
+      sleep: async (ms) => backoffs.push(ms),
+      domainProcessor: postProcessor({ value: false }),
+    });
+
+    const result = await pipeline.processBatch([makeEvent(50, 0, "frank")]);
+
+    expect(result.committed).toBe(true);
+    expect(pool.beginStatements).toEqual([
+      "BEGIN ISOLATION LEVEL SERIALIZABLE",
+      "BEGIN ISOLATION LEVEL SERIALIZABLE",
+    ]);
+    expect(backoffs).toEqual([50]);
+    expect(serializationRetriesTotal.getValue()).toBe(1);
+    expect(pool.committed.value.raw.size).toBe(1);
+  });
+
+  it("uses READ COMMITTED for ordinary batches", async () => {
+    const pool = new ConflictOncePool(false);
+    const pipeline = new IngestPipeline(pool, {
+      streamId: "C123",
+      bus: new EventBus(),
+      domainProcessor: postProcessor({ value: false }),
+    });
+
+    await pipeline.processBatch([makeEvent(60, 0, "gina")]);
+
+    expect(pool.beginStatements).toEqual(["BEGIN ISOLATION LEVEL READ COMMITTED"]);
   });
 });

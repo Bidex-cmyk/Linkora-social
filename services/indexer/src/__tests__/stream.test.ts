@@ -145,6 +145,43 @@ describe("streamEvents — 429 backpressure", () => {
       )
     ).resolves.toBeUndefined();
   });
+
+  it("does not count serialization conflicts toward the stream circuit breaker", async () => {
+    const controller = new AbortController();
+    let fetchCalls = 0;
+    let processCalls = 0;
+    const fetchImpl = (async () => {
+      fetchCalls += 1;
+      return rpcResult(makeRawEvents(10, 1), 10) as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const process = async (events: RawEvent[]): Promise<number> => {
+      processCalls += 1;
+      if (processCalls <= 10) {
+        const error = new Error("serialization failure") as Error & { code: string };
+        error.code = "40001";
+        throw error;
+      }
+      controller.abort();
+      return events[events.length - 1].ledger;
+    };
+
+    await streamEvents(
+      {
+        rpcUrl: "http://rpc",
+        contractId: "C1",
+        startLedger: 10,
+        minPollMs: 0,
+        maxPollMs: 0,
+      },
+      process,
+      controller.signal,
+      { fetchImpl, sleep: async () => {}, rateLimiter: nonBlockingLimiter() }
+    );
+
+    expect(processCalls).toBe(11);
+    expect(fetchCalls).toBe(11);
+  });
 });
 
 describe("RpcError", () => {

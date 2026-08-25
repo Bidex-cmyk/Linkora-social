@@ -1,26 +1,25 @@
 /**
  * Exactly-once ingestion pipeline.
  *
- * Each batch is processed inside a SINGLE serialisable transaction:
+ * Each batch is processed inside a SINGLE transaction:
  *
  *   1. INSERT every event into the `raw_events` staging table, idempotent via
  *      `ON CONFLICT (ledger_sequence, event_index) DO NOTHING`.
- *   2. Project each event into the domain tables (posts, follows, …) via the
- *      injected `domainProcessor`, which MUST use the same transaction client.
+ *   2. Project each event into the domain tables (posts, follows, …) via
+ *      the injected `domainProcessor`, which MUST use the same transaction client.
  *   3. Stamp `raw_events.processed_at` and advance `indexer_cursor.processed_cursor`.
  *   4. COMMIT.
  *
- * Because the raw ingest, the domain write, and the cursor bump all live in
- * the same transaction, a crash at any point rolls back the entire batch. On
- * restart the batch is re-fetched from the (un-advanced) cursor and replayed;
- * the `ON CONFLICT` clause plus idempotent domain handlers guarantee no
- * duplicate domain rows — exactly-once semantics.
+ * Ordinary batches use READ COMMITTED because the raw and domain writes are
+ * idempotent. Callers that require SERIALIZABLE can opt in and receive bounded
+ * retries for PostgreSQL serialization failures and deadlocks.
  *
  * The pg types are narrowed to small structural interfaces so the pipeline can
  * be unit-tested against an in-memory fake without a live database.
  */
 
 import { EventBus, BusEvent } from "./bus";
+import { serializationRetriesTotal } from "./metrics";
 
 export interface QueryResultLike {
   rowCount: number | null;
@@ -55,11 +54,19 @@ export interface IngestEvent {
  */
 export type DomainProcessor = (client: PgClientLike, event: IngestEvent) => Promise<void>;
 
+export type TransactionIsolation = "read committed" | "serializable";
+
 export interface IngestPipelineOptions {
   /** Stream identity for the cursor row (typically the contract id). */
   streamId: string;
   bus: EventBus;
   domainProcessor?: DomainProcessor;
+  /** READ COMMITTED by default. Use SERIALIZABLE only for handlers that need it. */
+  transactionIsolation?: TransactionIsolation;
+  /** Maximum total attempts for explicitly serializable transactions. */
+  serializationRetryAttempts?: number;
+  /** Injectable delay for deterministic retry tests. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export interface BatchResult {
@@ -70,21 +77,84 @@ export interface BatchResult {
   inserted: number;
 }
 
+const DEFAULT_SERIALIZATION_ATTEMPTS = 3;
+const DEFAULT_RETRY_BASE_MS = 50;
+
 const noopProcessor: DomainProcessor = async () => {
   /* default: no domain projection wired — overridden in production */
 };
+
+export function isSerializationConflict(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "40001" || code === "40P01";
+}
+
+/**
+ * Retry a serializable transaction after PostgreSQL serialization failures and
+ * deadlocks. The operation must open a fresh transaction for every attempt.
+ */
+export async function withSerializationRetry<T>(
+  operation: (attempt: number) => Promise<T>,
+  options: {
+    maxAttempts?: number;
+    sleep?: (ms: number) => Promise<void>;
+  } = {}
+): Promise<T> {
+  const maxAttempts = Math.max(
+    1,
+    Math.floor(options.maxAttempts ?? DEFAULT_SERIALIZATION_ATTEMPTS)
+  );
+  const sleep =
+    options.sleep ??
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await operation(attempt);
+    } catch (error) {
+      if (!isSerializationConflict(error) || attempt >= maxAttempts) {
+        throw error;
+      }
+
+      const delayMs = DEFAULT_RETRY_BASE_MS * 2 ** (attempt - 1);
+      serializationRetriesTotal.inc();
+      console.warn(
+        JSON.stringify({
+          metric: "serialization_retry",
+          attempt,
+          nextAttempt: attempt + 1,
+          maxAttempts,
+          delayMs,
+          code: (error as { code?: unknown }).code,
+        })
+      );
+      await sleep(delayMs);
+    }
+  }
+}
 
 export class IngestPipeline {
   private readonly pool: PgPoolLike;
   private readonly streamId: string;
   private readonly bus: EventBus;
   private readonly domainProcessor: DomainProcessor;
+  private readonly transactionIsolation: TransactionIsolation;
+  private readonly serializationRetryAttempts: number;
+  private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(pool: PgPoolLike, opts: IngestPipelineOptions) {
     this.pool = pool;
     this.streamId = opts.streamId;
     this.bus = opts.bus;
     this.domainProcessor = opts.domainProcessor ?? noopProcessor;
+    this.transactionIsolation = opts.transactionIsolation ?? "read committed";
+    this.serializationRetryAttempts = Math.max(
+      1,
+      Math.floor(opts.serializationRetryAttempts ?? DEFAULT_SERIALIZATION_ATTEMPTS)
+    );
+    this.sleep =
+      opts.sleep ??
+      ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   }
 
   /** Read the last committed cursor for this stream (0 if none). */
@@ -102,20 +172,31 @@ export class IngestPipeline {
     }
   }
 
-  /**
-   * Process one batch transactionally. Returns once committed (and after the
-   * events have been published to the bus). On any error the transaction is
-   * rolled back and the error rethrown — nothing is persisted or published.
-   */
+  /** Process one batch with the configured transaction isolation. */
   async processBatch(events: IngestEvent[]): Promise<BatchResult> {
     if (events.length === 0) {
       return { committed: false, cursor: await this.readCursor(), inserted: 0 };
     }
 
+    if (this.transactionIsolation === "serializable") {
+      return withSerializationRetry(
+        () => this.processBatchOnce(events),
+        { maxAttempts: this.serializationRetryAttempts, sleep: this.sleep }
+      );
+    }
+
+    return this.processBatchOnce(events);
+  }
+
+  private async processBatchOnce(events: IngestEvent[]): Promise<BatchResult> {
     const client = await this.pool.connect();
     let inserted = 0;
     try {
-      await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+      await client.query(
+        this.transactionIsolation === "serializable"
+          ? "BEGIN ISOLATION LEVEL SERIALIZABLE"
+          : "BEGIN ISOLATION LEVEL READ COMMITTED"
+      );
 
       // (1) Stage raw events — idempotent on the natural key.
       for (const ev of events) {

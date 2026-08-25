@@ -21,6 +21,7 @@ import { AdaptivePoll } from "./poller";
 import { detectGap } from "./gap";
 import type { BackfillCoordinator } from "./services/backfill-coordinator";
 import type { BackfillConfig } from "./config";
+import { isSerializationConflict } from "./pipeline";
 
 export interface RawEvent {
   type: string;
@@ -485,6 +486,19 @@ export async function streamEvents(
       startLedger = Math.max(latestLedger, cursor + 1);
       await waitWithAbort(poll.next(events.length), signal);
     } catch (err) {
+      if (isSerializationConflict(err)) {
+        console.warn(
+          JSON.stringify({
+            metric: "serialization_conflict",
+            message:
+              "Retryable database conflict will not count toward the stream circuit breaker",
+            code: (err as { code?: unknown }).code,
+          })
+        );
+        await waitWithAbort(poll.intervalMs, signal);
+        continue;
+      }
+
       consecutiveFailures += 1;
       if (consecutiveFailures >= circuitBreakerThreshold) {
         console.error(
