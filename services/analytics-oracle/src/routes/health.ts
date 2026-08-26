@@ -1,14 +1,24 @@
 /**
  * Kubernetes-ready health endpoints: liveness, readiness, and startup probes.
  *
- * - /health/live    always 200 while the process is running
+ * - /health          aggregate status, including degraded modes
+ * - /health/live     always 200 while the process is running
  * - /health/ready    200 when downstream dependencies (DB, Stellar RPC) are healthy
  * - /health/startup  200 once initial bootstrap (first analytics window) has completed
+ *
+ * `rateLimiter` reports which store backs the limiter. `shared: false` means
+ * limits are enforced per replica, so a scaled deployment's effective limit is
+ * `limit × replicaCount`. That marks the service degraded on /health but does
+ * not fail readiness — a single-replica deployment is still correct, and
+ * pulling the pod from the load balancer would turn a weak limit into an
+ * outage.
  */
 
 import { Router } from "express";
 import { Pool } from "pg";
+import type { RateLimitStoreStatus } from "@linkora/types/src/rate-limit-env.js";
 import { logger } from "../logger.js";
+import { getRateLimitStoreStatus } from "../middleware/rate-limiter.js";
 
 /** Slow-check warning threshold in ms — logs a warning but does not fail. */
 const DB_SLOW_THRESHOLD_MS = 1_000;
@@ -29,6 +39,8 @@ export interface HealthDeps {
   isStarted: () => boolean;
   startedAt: () => string | null;
   isShuttingDown: () => boolean;
+  /** Injectable for tests; defaults to the module-level limiter singleton. */
+  rateLimitStatus?: () => RateLimitStoreStatus;
 }
 
 async function checkDatabase(db: Pool): Promise<DependencyCheck> {
@@ -71,8 +83,7 @@ async function checkDatabase(db: Pool): Promise<DependencyCheck> {
   } catch (err: unknown) {
     const latencyMs = Date.now() - start;
     const message = err instanceof Error ? err.message : String(err);
-    const isTimeout =
-      message.includes("timed out") || message.includes("statement_timeout");
+    const isTimeout = message.includes("timed out") || message.includes("statement_timeout");
 
     logger.error(
       { latencyMs, error: message, timeout: isTimeout },
@@ -104,16 +115,17 @@ async function checkStellarRpc(rpcUrl: string): Promise<DependencyCheck> {
 
 export function createHealthRouter(deps: HealthDeps): Router {
   const router = Router();
+  const rateLimitStatus = deps.rateLimitStatus ?? getRateLimitStoreStatus;
 
-  router.get("/health/live", (_req, res) => {
+  router.get("/health", async (_req, res) => {
     const uptime = Math.floor((Date.now() - deps.startTime) / 1000);
-    res.json({ status: "alive", uptime });
-  });
+    const rateLimiter = rateLimitStatus();
 
-  router.get("/health/ready", async (_req, res) => {
     if (deps.isShuttingDown()) {
       res.status(503).json({
-        status: "not_ready",
+        status: "degraded",
+        uptime,
+        rateLimiter,
         checks: {
           database: { status: "down", latencyMs: 0 },
           stellar_rpc: { status: "down", latencyMs: 0 },
@@ -127,10 +139,48 @@ export function createHealthRouter(deps: HealthDeps): Router {
       checkStellarRpc(deps.rpcUrl),
     ]);
 
+    const healthy = database.status === "up" && stellar_rpc.status === "up";
+    const status = healthy ? (rateLimiter.shared ? "ok" : "degraded") : "degraded";
+
+    res.status(healthy ? 200 : 503).json({
+      status,
+      uptime,
+      rateLimiter,
+      checks: { database, stellar_rpc },
+    });
+  });
+
+  router.get("/health/live", (_req, res) => {
+    const uptime = Math.floor((Date.now() - deps.startTime) / 1000);
+    res.json({ status: "alive", uptime });
+  });
+
+  router.get("/health/ready", async (_req, res) => {
+    const rateLimiter = rateLimitStatus();
+
+    if (deps.isShuttingDown()) {
+      res.status(503).json({
+        status: "not_ready",
+        degraded: !rateLimiter.shared,
+        checks: {
+          database: { status: "down", latencyMs: 0 },
+          stellar_rpc: { status: "down", latencyMs: 0 },
+          rateLimiter,
+        },
+      });
+      return;
+    }
+
+    const [database, stellar_rpc] = await Promise.all([
+      checkDatabase(deps.db),
+      checkStellarRpc(deps.rpcUrl),
+    ]);
+
     const ready = database.status === "up" && stellar_rpc.status === "up";
     res.status(ready ? 200 : 503).json({
       status: ready ? "ready" : "not_ready",
-      checks: { database, stellar_rpc },
+      degraded: !rateLimiter.shared,
+      checks: { database, stellar_rpc, rateLimiter },
     });
   });
 

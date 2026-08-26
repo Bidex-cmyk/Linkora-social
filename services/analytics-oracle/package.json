@@ -53,20 +53,23 @@
       "/node_modules/(?!(.*@noble)/)"
     ],
     "moduleNameMapper": {
+      "^@linkora/types/src/(.*)\\.js$": "<rootDir>/../../packages/types/src/$1.ts",
       "^(\\.{1,2}/.*)\\.js$": "$1"
     },
     "transform": {
       "^.+\\.tsx?$": [
         "ts-jest",
         {
-          "useESM": true
+          "useESM": true,
+          "tsconfig": "tsconfig.test.json"
         }
       ],
       "^.+\\.js$": [
         "ts-jest",
         {
           "useESM": false,
-          "isolatedModules": true
+          "isolatedModules": true,
+          "tsconfig": "tsconfig.test.json"
         }
       ]
     }

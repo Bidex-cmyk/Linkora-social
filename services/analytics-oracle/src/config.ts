@@ -1,6 +1,19 @@
 /**
  * Shared configuration for the analytics oracle service.
+ *
+ * Rate limiting
+ * ─────────────
+ * REDIS_URL                   — Shared Redis endpoint backing the rate limiter.
+ *                               REQUIRED when NODE_ENV=production; without it
+ *                               every replica keeps its own counters and the
+ *                               effective limit becomes
+ *                               ORACLE_RATE_LIMIT_MAX_REQUESTS × replicaCount.
+ * ALLOW_IN_MEMORY_RATE_LIMIT  — Explicit opt-out allowing the in-memory store
+ *                               in production. Only safe for single-replica
+ *                               deployments.
  */
+
+import { resolveRateLimitEnv } from "@linkora/types/src/rate-limit-env.js";
 
 export interface OracleRateLimitConfig {
   windowMs: number;
@@ -42,3 +55,13 @@ export const oracleCacheConfig: OracleCacheConfig = {
   maxSize: parseInt(process.env["ATTESTATION_CACHE_MAX_SIZE"] ?? "10000", 10),
   ttlMs: parseInt(process.env["ATTESTATION_CACHE_TTL_MS"] ?? "3600000", 10),
 };
+
+/**
+ * Validate the rate-limiting environment and return the resolved Redis URL.
+ *
+ * Throws when NODE_ENV=production and no shared store is configured, so a
+ * deployment can never silently run with per-replica limits.
+ */
+export function loadRateLimitConfig() {
+  return resolveRateLimitEnv("analytics-oracle");
+}

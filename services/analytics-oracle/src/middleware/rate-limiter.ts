@@ -13,11 +13,20 @@
  * rate-limit state is shared across all replicas and survives restarts.
  * Without `REDIS_URL` a local in-memory Map is used; entries are automatically
  * evicted after `windowMs` to prevent unbounded memory growth, but each
- * instance maintains its own independent counter — document this limitation
- * clearly in your deployment runbook.
+ * instance maintains its own independent counter.
+ *
+ * `REDIS_URL` is mandatory when `NODE_ENV=production` — see
+ * `@linkora/types/src/rate-limit-env` — so a scaled deployment can never
+ * silently fall back to per-replica counters. The active store is reported on
+ * `/health` as `rateLimiter: { store, shared }`.
  */
 
 import { Request, Response, NextFunction } from "express";
+import {
+  inMemoryRateLimitWarning,
+  resolveRateLimitEnv,
+  type RateLimitStoreStatus,
+} from "@linkora/types/src/rate-limit-env.js";
 import { logger } from "../logger.js";
 import { oracleRateLimitConfig } from "../config.js";
 
@@ -279,9 +288,17 @@ interface RedisPipeline {
  *
  * When `REDIS_URL` is present a Redis-backed store is returned. Falls back to
  * the in-memory store and logs a warning so operators know rate limiting is
- * per-instance only.
+ * per-instance only. Callers that need the resulting mode for the health
+ * endpoint should use {@link createRateLimitStoreWithStatus}.
  */
 export async function createRateLimitStore(redisUrl?: string): Promise<RateLimitStore> {
+  return (await createRateLimitStoreWithStatus(redisUrl)).store;
+}
+
+/** Same as {@link createRateLimitStore} but also reports which backend was used. */
+export async function createRateLimitStoreWithStatus(
+  redisUrl?: string
+): Promise<{ store: RateLimitStore; status: RateLimitStoreStatus }> {
   if (redisUrl) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const Redis = (await import("ioredis")) as any;
@@ -293,7 +310,10 @@ export async function createRateLimitStore(redisUrl?: string): Promise<RateLimit
     });
     await client.connect();
     logger.info("Rate limiter using Redis store (shared across instances)");
-    return new RedisRateLimitStore(client as unknown as RedisClient);
+    return {
+      store: new RedisRateLimitStore(client as unknown as RedisClient),
+      status: { store: "redis", shared: true },
+    };
   }
 
   logger.warn(
@@ -301,10 +321,13 @@ export async function createRateLimitStore(redisUrl?: string): Promise<RateLimit
       "Rate limit state is NOT shared across instances and will reset on restart. " +
       "Set REDIS_URL to enable cross-instance rate limiting."
   );
-  return new InMemoryRateLimitStore(
-    oracleRateLimitConfig.cleanupIntervalMs,
-    oracleRateLimitConfig.maxEntries
-  );
+  return {
+    store: new InMemoryRateLimitStore(
+      oracleRateLimitConfig.cleanupIntervalMs,
+      oracleRateLimitConfig.maxEntries
+    ),
+    status: { store: "memory", shared: false },
+  };
 }
 
 // ── RateLimiter (store-backed) ────────────────────────────────────────────────
@@ -348,17 +371,37 @@ export class RateLimiter {
 // upgrade to Redis when REDIS_URL is available.
 let limiter = new RateLimiter(oracleRateLimitConfig.windowMs, oracleRateLimitConfig.maxRequests);
 
+// Until initRateLimiter() runs the limiter is process-local, so the honest
+// answer for /health is "memory, not shared".
+let storeStatus: RateLimitStoreStatus = { store: "memory", shared: false };
+
 /**
  * Call once at service startup (after env is loaded).
- * Creates the Redis store if REDIS_URL is set and replaces the in-memory one.
+ *
+ * Validates the rate-limit environment first — this throws when
+ * `NODE_ENV=production` and no shared store is configured — then creates the
+ * Redis store and replaces the in-memory one.
  */
 export async function initRateLimiter(): Promise<void> {
-  const store = await createRateLimitStore(process.env["REDIS_URL"]);
+  const resolved = resolveRateLimitEnv("analytics-oracle");
+  const warning = inMemoryRateLimitWarning(resolved);
+  if (warning) logger.warn(warning);
+
+  const { store, status } = await createRateLimitStoreWithStatus(resolved.redisUrl);
   limiter = new RateLimiter(
     oracleRateLimitConfig.windowMs,
     oracleRateLimitConfig.maxRequests,
     store
   );
+  storeStatus = status;
+}
+
+/**
+ * Which store currently backs the limiter, for the `/health` endpoint.
+ * `shared: false` means limits are enforced per replica, not per deployment.
+ */
+export function getRateLimitStoreStatus(): RateLimitStoreStatus {
+  return { ...storeStatus };
 }
 
 function getClientIP(req: Request): string {

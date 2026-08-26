@@ -37,3 +37,16 @@ export {
 } from "./errors";
 
 export type { ErrorCode, ErrorResponseBody, ErrorResponse } from "./errors";
+
+export {
+  RateLimitConfigError,
+  resolveRateLimitEnv,
+  inMemoryRateLimitWarning,
+} from "./rate-limit-env";
+
+export type {
+  RateLimitStoreKind,
+  RateLimitStoreStatus,
+  RateLimitEnv,
+  ResolvedRateLimitEnv,
+} from "./rate-limit-env";

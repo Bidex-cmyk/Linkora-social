@@ -11,10 +11,22 @@
  * the health endpoint exposes:
  *   - backfill.status  — "healthy" | "backfilling" | "gap_too_large" | "circuit_open"
  *   - backfill.progress — processed / total ledger counts
+ *
+ * Rate limiter monitoring
+ * ───────────────────────
+ * The readiness payload reports which store backs the HTTP rate limiter:
+ *   - rateLimiter.store  — "redis" (shared) | "memory" (per replica)
+ *   - rateLimiter.shared — false means the limit is enforced per replica, so a
+ *                          scaled deployment's effective limit is
+ *                          `limit × replicaCount`. This marks the service
+ *                          degraded on /health but does not fail readiness —
+ *                          a single-replica deployment is still correct.
  */
 
 import { Pool } from "pg";
+import type { RateLimitStoreStatus } from "@linkora/types/src/rate-limit-env";
 import type { BackfillCoordinator, BackfillStatus, BackfillProgress } from "./backfill-coordinator";
+import { getRateLimitStoreStatus } from "../middleware/rateLimit";
 
 export interface DependencyCheck {
   status: "up" | "down";
@@ -46,12 +58,18 @@ export interface PoolHealthCheck {
 
 export interface ReadinessResult {
   ready: boolean;
+  /**
+   * True when the service is serving but running in a reduced-safety mode —
+   * currently, when the rate limiter is not backed by a shared store.
+   */
+  degraded: boolean;
   checks: {
     database: DependencyCheck;
     stellar_rpc: DependencyCheck;
     event_stream: EventStreamCheck;
     backfill: BackfillHealthCheck;
     pool: PoolHealthCheck;
+    rateLimiter: RateLimitStoreStatus;
   };
 }
 
@@ -64,7 +82,9 @@ export class HealthMonitor {
 
   constructor(
     private db: Pool,
-    private rpcUrl: string
+    private rpcUrl: string,
+    /** Injectable for tests; defaults to the module-level limiter singleton. */
+    private rateLimitStatus: () => RateLimitStoreStatus = getRateLimitStoreStatus
   ) {}
 
   /**
@@ -161,9 +181,12 @@ export class HealthMonitor {
   }
 
   async checkReadiness(): Promise<ReadinessResult> {
+    const rateLimiter = this.rateLimitStatus();
+
     if (this.shuttingDown) {
       return {
         ready: false,
+        degraded: !rateLimiter.shared,
         checks: {
           database: { status: "down", latencyMs: 0 },
           stellar_rpc: { status: "down", latencyMs: 0 },
@@ -175,6 +198,7 @@ export class HealthMonitor {
             consecutiveFailures: 0,
           },
           pool: this.checkPool(),
+          rateLimiter,
         },
       };
     }
@@ -190,9 +214,14 @@ export class HealthMonitor {
     // Not ready if circuit breaker is open or gap is too large.
     const backfillHealthy =
       backfill.status !== "circuit_open" && backfill.status !== "gap_too_large";
-    const ready =
-      database.status === "up" && stellar_rpc.status === "up" && backfillHealthy;
+    const ready = database.status === "up" && stellar_rpc.status === "up" && backfillHealthy;
 
-    return { ready, checks: { database, stellar_rpc, event_stream, backfill, pool } };
+    return {
+      ready,
+      // An unshared limiter is a real weakness in a scaled deployment, but it
+      // is not a reason to pull the pod out of the load balancer.
+      degraded: !rateLimiter.shared,
+      checks: { database, stellar_rpc, event_stream, backfill, pool, rateLimiter },
+    };
   }
 }

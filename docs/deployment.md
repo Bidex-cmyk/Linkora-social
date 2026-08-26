@@ -8,14 +8,13 @@ This guide covers production deployment of the three Linkora backend services:
 | `services/dm-relay`         | 3001         | Transport-only E2EE direct-message relay               |
 | `services/analytics-oracle` | 4000         | Ed25519 analytics attestation oracle                   |
 
-
-
 ---
 
 ## Table of Contents
 
 1. [Prerequisites](#1-prerequisites)
 2. [Environment Variable Reference](#2-environment-variable-reference)
+   - [Shared rate limiting (`REDIS_URL`)](#24-shared-rate-limiting-redis_url)
 3. [Database Migration Steps](#3-database-migration-steps)
 4. [Docker Compose Deployment](#4-docker-compose-deployment)
 5. [Kubernetes Deployment](#5-kubernetes-deployment)
@@ -28,13 +27,13 @@ This guide covers production deployment of the three Linkora backend services:
 
 ## 1. Prerequisites
 
-| Dependency  | Minimum Version | Notes                                                        |
-| ----------- | --------------- | ------------------------------------------------------------ |
-| Docker      | 24+             | Compose v2 required (`docker compose`)                       |
-| PostgreSQL  | 15+             | One database per service (or shared with separate schemas)   |
-| Redis       | 7+              | Optional — required for shared rate limiting across replicas |
-| Stellar RPC | —               | Horizon-compatible Soroban RPC endpoint (testnet or mainnet) |
-| Node.js     | 18+             | Only needed for local builds outside Docker                  |
+| Dependency  | Minimum Version | Notes                                                                                                   |
+| ----------- | --------------- | ------------------------------------------------------------------------------------------------------- |
+| Docker      | 24+             | Compose v2 required (`docker compose`)                                                                  |
+| PostgreSQL  | 15+             | One database per service (or shared with separate schemas)                                              |
+| Redis       | 7+              | **Required in production** — backs shared rate limiting; see [§2.4](#24-shared-rate-limiting-redis_url) |
+| Stellar RPC | —               | Horizon-compatible Soroban RPC endpoint (testnet or mainnet)                                            |
+| Node.js     | 18+             | Only needed for local builds outside Docker                                                             |
 
 ---
 
@@ -42,46 +41,49 @@ This guide covers production deployment of the three Linkora backend services:
 
 ### 2.1 Indexer (`services/indexer`)
 
-| Variable                                | Required | Default                    | Description                                                                                                                                 |
-| --------------------------------------- | -------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`                          | ✅       | —                          | PostgreSQL connection string, e.g. `postgresql://user:pass@host:5432/linkora_indexer`                                                       |
-| `STELLAR_RPC_URL`                       | ✅       | —                          | Soroban RPC endpoint, e.g. `https://soroban-testnet.stellar.org`                                                                            |
-| `CONTRACT_ID`                           | ✅       | —                          | Linkora contract address on the Stellar network                                                                                             |
-| `START_LEDGER`                          | ✅       | —                          | Ledger sequence to begin indexing from (use the contract deployment ledger)                                                                 |
-| `PORT`                                  |          | `3000`                     | HTTP/WebSocket server port                                                                                                                  |
-| `REDIS_URL`                             |          | —                          | Redis connection string for shared rate limiting, e.g. `redis://redis:6379`. Without this, each replica enforces its own per-instance limit |
-| `RATE_LIMIT_ANON_RPM`                   |          | `100`                      | Max read requests per minute for unauthenticated IPs                                                                                        |
-| `RATE_LIMIT_AUTH_RPM`                   |          | `300`                      | Max requests per minute for authenticated Stellar addresses                                                                                 |
-| `RATE_LIMIT_WRITE_RPM`                  |          | `50`                       | Max write requests per minute for unauthenticated IPs                                                                                       |
-| `RPC_RATE_LIMIT_PER_SEC`                |          | `10`                       | Outbound Soroban RPC calls per second (token-bucket)                                                                                        |
-| `RPC_RATE_LIMIT_BURST`                  |          | `= RPC_RATE_LIMIT_PER_SEC` | Burst capacity for outbound RPC calls                                                                                                       |
-| `MIN_POLL_INTERVAL_MS`                  |          | —                          | Minimum interval (ms) between event-stream polls                                                                                            |
-| `MAX_POLL_INTERVAL_MS`                  |          | —                          | Maximum interval (ms) between event-stream polls (adaptive back-off ceiling)                                                                |
-| `SCORE_REFRESH_INTERVAL_MINUTES`        |          | `5`                        | How often creator feed scores are recalculated                                                                                              |
-| `BACKFILL_MAX_DEPTH_LEDGERS`            |          | `10000`                    | Maximum ledgers to backfill in one recovery run. Larger gaps raise an alert instead                                                         |
-| `BACKFILL_BATCH_SIZE`                   |          | `100`                      | Ledgers fetched per batch during backfill                                                                                                   |
-| `BACKFILL_RATE_LIMIT_MS`                |          | `100`                      | Delay (ms) between backfill batches                                                                                                         |
-| `BACKFILL_ALERT_THRESHOLD`              |          | `5000`                     | Alert when a detected gap exceeds this many ledgers                                                                                         |
-| `BACKFILL_CIRCUIT_BREAKER_MAX_FAILURES` |          | `5`                        | Stop backfilling after this many consecutive batch failures                                                                                 |
-| `STATEMENT_TIMEOUT_MS`                  |          | `30000`                    | PostgreSQL statement timeout                                                                                                                |
-| `LOCK_TIMEOUT_MS`                       |          | `10000`                    | PostgreSQL lock timeout                                                                                                                     |
-| `SLOW_QUERY_THRESHOLD_MS`               |          | `5000`                     | Log queries slower than this threshold                                                                                                      |
+| Variable                                | Required | Default                    | Description                                                                                                                                                                                         |
+| --------------------------------------- | -------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                          | ✅       | —                          | PostgreSQL connection string, e.g. `postgresql://user:pass@host:5432/linkora_indexer`                                                                                                               |
+| `STELLAR_RPC_URL`                       | ✅       | —                          | Soroban RPC endpoint, e.g. `https://soroban-testnet.stellar.org`                                                                                                                                    |
+| `CONTRACT_ID`                           | ✅       | —                          | Linkora contract address on the Stellar network                                                                                                                                                     |
+| `START_LEDGER`                          | ✅       | —                          | Ledger sequence to begin indexing from (use the contract deployment ledger)                                                                                                                         |
+| `PORT`                                  |          | `3000`                     | HTTP/WebSocket server port                                                                                                                                                                          |
+| `REDIS_URL`                             | ✅¹      | —                          | Redis connection string backing the shared rate limiter, e.g. `redis://redis:6379`. **Startup fails when `NODE_ENV=production` and this is unset** — see [§2.4](#24-shared-rate-limiting-redis_url) |
+| `ALLOW_IN_MEMORY_RATE_LIMIT`            |          | `false`                    | Opt out of the `REDIS_URL` requirement for a deliberately single-replica production deployment. Limits become per-instance                                                                          |
+| `RATE_LIMIT_ANON_RPM`                   |          | `100`                      | Max read requests per minute for unauthenticated IPs                                                                                                                                                |
+| `RATE_LIMIT_AUTH_RPM`                   |          | `300`                      | Max requests per minute for authenticated Stellar addresses                                                                                                                                         |
+| `RATE_LIMIT_WRITE_RPM`                  |          | `50`                       | Max write requests per minute for unauthenticated IPs                                                                                                                                               |
+| `RPC_RATE_LIMIT_PER_SEC`                |          | `10`                       | Outbound Soroban RPC calls per second (token-bucket)                                                                                                                                                |
+| `RPC_RATE_LIMIT_BURST`                  |          | `= RPC_RATE_LIMIT_PER_SEC` | Burst capacity for outbound RPC calls                                                                                                                                                               |
+| `MIN_POLL_INTERVAL_MS`                  |          | —                          | Minimum interval (ms) between event-stream polls                                                                                                                                                    |
+| `MAX_POLL_INTERVAL_MS`                  |          | —                          | Maximum interval (ms) between event-stream polls (adaptive back-off ceiling)                                                                                                                        |
+| `SCORE_REFRESH_INTERVAL_MINUTES`        |          | `5`                        | How often creator feed scores are recalculated                                                                                                                                                      |
+| `BACKFILL_MAX_DEPTH_LEDGERS`            |          | `10000`                    | Maximum ledgers to backfill in one recovery run. Larger gaps raise an alert instead                                                                                                                 |
+| `BACKFILL_BATCH_SIZE`                   |          | `100`                      | Ledgers fetched per batch during backfill                                                                                                                                                           |
+| `BACKFILL_RATE_LIMIT_MS`                |          | `100`                      | Delay (ms) between backfill batches                                                                                                                                                                 |
+| `BACKFILL_ALERT_THRESHOLD`              |          | `5000`                     | Alert when a detected gap exceeds this many ledgers                                                                                                                                                 |
+| `BACKFILL_CIRCUIT_BREAKER_MAX_FAILURES` |          | `5`                        | Stop backfilling after this many consecutive batch failures                                                                                                                                         |
+| `STATEMENT_TIMEOUT_MS`                  |          | `30000`                    | PostgreSQL statement timeout                                                                                                                                                                        |
+| `LOCK_TIMEOUT_MS`                       |          | `10000`                    | PostgreSQL lock timeout                                                                                                                                                                             |
+| `SLOW_QUERY_THRESHOLD_MS`               |          | `5000`                     | Log queries slower than this threshold                                                                                                                                                              |
 
 ### 2.2 DM Relay (`services/dm-relay`)
 
-| Variable                | Required | Default                 | Description                                                                      |
-| ----------------------- | -------- | ----------------------- | -------------------------------------------------------------------------------- |
-| `DATABASE_URL`          | ✅       | —                       | PostgreSQL connection string, e.g. `postgresql://user:pass@host:5432/linkora_dm` |
-| `PORT`                  |          | `3001`                  | HTTP server port                                                                 |
-| `NODE_ENV`              |          | `development`           | Set to `production` in production                                                |
-| `CORS_ORIGIN`           |          | `http://localhost:3000` | Comma-separated list of allowed CORS origins                                     |
-| `MESSAGE_TTL_DAYS`      |          | `7`                     | Days to retain delivered messages before the cleanup job removes them            |
-| `MAX_TIMESTAMP_SKEW`    |          | `30`                    | Maximum age (seconds) of a Stellar auth timestamp before it is rejected          |
-| `STELLAR_NETWORK`       |          | `Testnet`               | Stellar network passphrase identifier (`Testnet` or `Mainnet`)                   |
-| `IDEMPOTENCY_TTL_HOURS` |          | `24`                    | Hours to retain idempotency keys for deduplication                               |
-| `REDIS_URL`             |          | —                       | Redis connection string for shared rate limiting across replicas                 |
-| `RATE_LIMIT_ANON_RPM`   |          | `100`                   | Max requests per minute for unauthenticated IPs                                  |
-| `RATE_LIMIT_AUTH_RPM`   |          | `300`                   | Max requests per minute for authenticated Stellar addresses                      |
+| Variable                     | Required | Default                 | Description                                                                                                                                     |
+| ---------------------------- | -------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`               | ✅       | —                       | PostgreSQL connection string, e.g. `postgresql://user:pass@host:5432/linkora_dm`                                                                |
+| `PORT`                       |          | `3001`                  | HTTP server port                                                                                                                                |
+| `NODE_ENV`                   |          | `development`           | Set to `production` in production                                                                                                               |
+| `CORS_ORIGIN`                |          | `http://localhost:3000` | Comma-separated list of allowed CORS origins                                                                                                    |
+| `MESSAGE_TTL_DAYS`           |          | `7`                     | Days to retain delivered messages before the cleanup job removes them                                                                           |
+| `MAX_TIMESTAMP_SKEW`         |          | `30`                    | Maximum age (seconds) of a Stellar auth timestamp before it is rejected                                                                         |
+| `STELLAR_NETWORK`            |          | `Testnet`               | Stellar network passphrase identifier (`Testnet` or `Mainnet`)                                                                                  |
+| `IDEMPOTENCY_TTL_HOURS`      |          | `24`                    | Hours to retain idempotency keys for deduplication                                                                                              |
+| `REDIS_URL`                  | ✅¹      | —                       | Redis connection string backing the shared HTTP **and WebSocket** rate limiters. **Startup fails when `NODE_ENV=production` and this is unset** |
+| `ALLOW_IN_MEMORY_RATE_LIMIT` |          | `false`                 | Opt out of the `REDIS_URL` requirement for a single-replica deployment                                                                          |
+| `WS_RATE_LIMIT_MAX`          |          | `30`                    | Max WebSocket connection attempts per minute per IP                                                                                             |
+| `RATE_LIMIT_ANON_RPM`        |          | `100`                   | Max requests per minute for unauthenticated IPs                                                                                                 |
+| `RATE_LIMIT_AUTH_RPM`        |          | `300`                   | Max requests per minute for authenticated Stellar addresses                                                                                     |
 
 ### 2.3 Analytics Oracle (`services/analytics-oracle`)
 
@@ -95,10 +97,44 @@ This guide covers production deployment of the three Linkora backend services:
 | `ORACLE_NAME`                    |          | `default`                           | Identifier included in on-chain attestations                                                                                                |
 | `WINDOW_LEDGERS`                 |          | `1000`                              | Size of the analytics window in ledgers                                                                                                     |
 | `NETWORK_PASSPHRASE`             |          | `Test SDF Network ; September 2015` | Stellar network passphrase for transaction signing                                                                                          |
-| `REDIS_URL`                      |          | —                                   | Redis connection string for shared rate limiting across replicas                                                                            |
+| `REDIS_URL`                      | ✅¹      | —                                   | Redis connection string backing the shared rate limiter. **Startup fails when `NODE_ENV=production` and this is unset**                     |
+| `ALLOW_IN_MEMORY_RATE_LIMIT`     |          | `false`                             | Opt out of the `REDIS_URL` requirement for a single-replica deployment                                                                      |
 | `ORACLE_RATE_LIMIT_WINDOW_MS`    |          | `60000`                             | Rate limit window in milliseconds                                                                                                           |
 | `ORACLE_RATE_LIMIT_MAX_REQUESTS` |          | `10`                                | Max requests per window per IP                                                                                                              |
 | `ORACLE_RATE_LIMIT_BYPASS_IPS`   |          | —                                   | Comma-separated IPs to bypass rate limiting (e.g. internal health checkers)                                                                 |
+
+### 2.4 Shared rate limiting (`REDIS_URL`)
+
+¹ `REDIS_URL` is **required whenever `NODE_ENV=production`**. All three services
+refuse to start without it and exit with:
+
+```
+[<service>] REDIS_URL is required when NODE_ENV=production. Without it each replica keeps
+its own rate-limit counters, so the effective limit becomes RATE_LIMIT × replicaCount and
+rate limiting provides no real protection. ...
+```
+
+**Why it is mandatory.** Without Redis every replica keeps its own counters. An
+attacker distributing requests across a load balancer multiplies their
+effective allowance by the replica count:
+
+```
+effective_limit = RATE_LIMIT_ANON_RPM × replica_count
+```
+
+With three replicas the documented 100 req/min anonymous limit becomes 300
+req/min — enough to brute-force authenticated endpoints, flood the indexer API,
+or bypass the DM relay's per-address send limits. Nothing in the response makes
+this visible, which is why the check happens at startup rather than at runtime.
+
+**Every replica must point at the same Redis endpoint.** Per-replica Redis
+instances reproduce the original problem exactly.
+
+**Single-replica escape hatch.** A deployment that genuinely runs one replica
+can set `ALLOW_IN_MEMORY_RATE_LIMIT=true` to boot without Redis. That
+deployment then reports `rateLimiter: { store: "memory", shared: false }` on
+`/health` and its aggregate status is `degraded` — see
+[§6](#6-health-check-endpoints). Do not set this on anything that can scale.
 
 ---
 
@@ -586,6 +622,7 @@ All three services expose Kubernetes-compatible probes on the same paths:
 
 | Endpoint              | Probe type | Returns 200 when                                                     |
 | --------------------- | ---------- | -------------------------------------------------------------------- |
+| `GET /health`         | Aggregate  | Dependencies reachable; reports degraded modes                       |
 | `GET /health/live`    | Liveness   | Process is running                                                   |
 | `GET /health/ready`   | Readiness  | Database (and Stellar RPC for oracle/indexer) reachable              |
 | `GET /health/startup` | Startup    | Initial bootstrap complete (first window processed / DB initialised) |
@@ -595,14 +632,44 @@ Example readiness response:
 ```json
 {
   "status": "ready",
+  "degraded": false,
   "checks": {
     "database": { "status": "up", "latencyMs": 3 },
-    "stellar_rpc": { "status": "up", "latencyMs": 45 }
+    "stellar_rpc": { "status": "up", "latencyMs": 45 },
+    "rateLimiter": { "store": "redis", "shared": true }
   }
 }
 ```
 
 A `503` response indicates `"not_ready"` — the load balancer should stop routing traffic until the probe recovers.
+
+### Rate limiter status
+
+Every service reports which store backs its rate limiter:
+
+| Field                | Values               | Meaning                                                           |
+| -------------------- | -------------------- | ----------------------------------------------------------------- |
+| `rateLimiter.store`  | `"redis"`/`"memory"` | The backing store the limiter connected to at startup             |
+| `rateLimiter.shared` | `true`/`false`       | Whether limit state is shared across every replica of the service |
+
+When `shared` is `false`, limits are enforced per replica — a scaled deployment's
+real limit is `limit × replicaCount`. `GET /health` reports `"status": "degraded"`
+in that case:
+
+```json
+{
+  "status": "degraded",
+  "uptime": 421,
+  "rateLimiter": { "store": "memory", "shared": false },
+  "checks": { "database": { "status": "up", "latencyMs": 3 } }
+}
+```
+
+This is deliberately **not** a readiness failure. A single-replica deployment
+that opted in via `ALLOW_IN_MEMORY_RATE_LIMIT` is still serving correctly, and
+removing the pod from the load balancer would turn a weak limit into an outage.
+Alert on `status == "degraded"` instead, and treat it as a configuration bug on
+anything running more than one replica.
 
 ---
 
@@ -611,19 +678,20 @@ A `503` response indicates `"not_ready"` — the load balancer should stop routi
 ### Indexer
 
 - **Horizontal scaling is supported** — multiple replicas share rate-limit state via Redis and process the same event stream. The `IngestPipeline` is idempotent (events are deduplicated by `(ledger_sequence, event_index)` primary key), so duplicate processing across replicas is safe.
-- Set `REDIS_URL` when running more than one replica.
+- `REDIS_URL` is mandatory in production, and every replica must point at the **same** Redis endpoint — per-replica instances give each replica its own counters again. Confirm with `GET /health` → `rateLimiter.shared == true`.
 - The WebSocket `/ws` endpoint broadcasts events via the in-process `EventBus`. For multi-replica WebSocket support, route clients to a single replica with sticky sessions, or introduce a Redis pub/sub fanout layer.
 - Tune `RPC_RATE_LIMIT_PER_SEC` to stay within your Soroban RPC provider's limits.
 
 ### DM Relay
 
 - **Stateless** — all state is in PostgreSQL. Scale replicas freely.
-- Set `REDIS_URL` to share rate-limit counters across replicas.
+- `REDIS_URL` is mandatory in production and shares both the HTTP counters and the per-IP WebSocket connection limit across replicas. Confirm with `GET /health` → `rateLimiter.shared == true`.
 - WebSocket connections (`/ws`) require sticky sessions if scaling to multiple replicas without a shared pub/sub layer.
 
 ### Analytics Oracle
 
 - **Run as a single replica.** The oracle signs and submits on-chain attestations; multiple replicas would submit duplicate transactions and waste Stellar fees.
+- `REDIS_URL` is still required in production. A single-replica oracle may set `ALLOW_IN_MEMORY_RATE_LIMIT=true` instead, accepting that `/health` reports `degraded`.
 - If high availability is required, use a standby replica with a distributed lock (e.g. Redis `SET NX`) to ensure only one instance submits at a time.
 
 ---
@@ -634,14 +702,15 @@ All services emit structured JSON logs via [pino](https://getpino.io). Each log 
 
 ### Key log events to alert on
 
-| Service | Log message                     | Severity | Action                                                                      |
-| ------- | ------------------------------- | -------- | --------------------------------------------------------------------------- |
-| Indexer | `Startup gap detected`          | WARN     | Verify backfill completes; check `BACKFILL_CIRCUIT_BREAKER_MAX_FAILURES`    |
-| Indexer | `backfill_alert` metric         | WARN     | Gap exceeds `BACKFILL_ALERT_THRESHOLD`; manual intervention may be needed   |
-| Indexer | `Fatal error`                   | ERROR    | Pod crashed; check DB/RPC connectivity                                      |
-| All     | `REDIS_URL is not set`          | WARN     | Rate limiting is per-instance; set `REDIS_URL` in multi-replica deployments |
-| Oracle  | `Attestation submission failed` | ERROR    | RPC or signing error; check `SOROBAN_RPC_URL` and `ORACLE_PRIVATE_KEY_HEX`  |
-| Oracle  | `Rate limit exceeded`           | WARN     | Potential abuse; review `ORACLE_RATE_LIMIT_MAX_REQUESTS`                    |
+| Service | Log message                                      | Severity | Action                                                                                       |
+| ------- | ------------------------------------------------ | -------- | -------------------------------------------------------------------------------------------- |
+| Indexer | `Startup gap detected`                           | WARN     | Verify backfill completes; check `BACKFILL_CIRCUIT_BREAKER_MAX_FAILURES`                     |
+| Indexer | `backfill_alert` metric                          | WARN     | Gap exceeds `BACKFILL_ALERT_THRESHOLD`; manual intervention may be needed                    |
+| Indexer | `Fatal error`                                    | ERROR    | Pod crashed; check DB/RPC connectivity                                                       |
+| All     | `REDIS_URL is not set`                           | WARN     | Rate limiting is per-instance; set `REDIS_URL` in multi-replica deployments                  |
+| All     | `REDIS_URL is required when NODE_ENV=production` | FATAL    | Service refused to start — set `REDIS_URL` (or `ALLOW_IN_MEMORY_RATE_LIMIT` for one replica) |
+| Oracle  | `Attestation submission failed`                  | ERROR    | RPC or signing error; check `SOROBAN_RPC_URL` and `ORACLE_PRIVATE_KEY_HEX`                   |
+| Oracle  | `Rate limit exceeded`                            | WARN     | Potential abuse; review `ORACLE_RATE_LIMIT_MAX_REQUESTS`                                     |
 
 ### Recommended metrics (Prometheus / Grafana)
 
@@ -656,6 +725,10 @@ Scrape the `/health/ready` endpoint and expose the following:
 ### Health check monitoring
 
 Poll `/health/ready` every 30 seconds from an external uptime monitor (e.g. UptimeRobot, Pingdom). Alert if the endpoint returns non-200 for two consecutive checks.
+
+Also poll `/health` and alert on `rateLimiter.shared == false` for any deployment
+with more than one replica — the limiter is running per-instance and the
+documented limits are not being enforced.
 
 ---
 
@@ -703,10 +776,8 @@ The `ORACLE_PRIVATE_KEY_HEX` is a 32-byte Ed25519 key. If lost, a new key must b
 
 ### Redis
 
-Redis holds only transient rate-limit state. No backup is required — on restart the in-memory counters reset gracefully and services continue operating.
+Redis holds only transient rate-limit state. No backup is required — on restart the counters reset gracefully and services continue operating, losing at most one window of enforcement.
 
+Redis is, however, a **hard startup dependency in production**: services validate `REDIS_URL` before binding a port. Treat it as a required component of the deployment, not an optional cache, and make sure every replica of a service resolves to the same Redis endpoint.
 
-
-
-
-## 
+##
