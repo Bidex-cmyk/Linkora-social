@@ -5,6 +5,7 @@ import { Database } from "../db";
 import { logger, requestLoggingMiddleware } from "../logger";
 import { rateLimit, rateLimitWrite } from "../middleware/rateLimit";
 import { requireStellarAuth } from "../middleware/stellarAuth";
+import { jsonWithRawBody } from "../middleware/rawBody";
 import { validateBody } from "../middleware/validate";
 import { z } from "zod";
 import { createProfilesRouter } from "./routes/profiles";
@@ -85,7 +86,7 @@ export function createApp(
   const app = express();
   app.use(helmet());
   app.set("trust proxy", 1); // trust first proxy
-  app.use(express.json());
+  app.use(jsonWithRawBody());
   app.use(corsMiddleware);
   app.use(requestLoggingMiddleware);
 
