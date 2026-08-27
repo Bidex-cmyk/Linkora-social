@@ -205,13 +205,16 @@ export async function dropOldPartitions(
   const cutoff = currentLedger - BigInt(cfg.retentionLedgers);
   if (cutoff <= 0n) return []; // retention window not yet reached
 
+  const detachConcurrently = await supportsDetachConcurrently(pool);
   const partitions = await listPartitions(pool);
   const dropped: string[] = [];
-  const detachConcurrently = await supportsDetachConcurrently(pool);
 
   for (const p of partitions) {
-    // Only consider partitions whose entire range is below the cutoff.
-    if (p.hiLedger > cutoff) continue;
+    // Only consider partitions whose entire range is safely below the cutoff.
+    // We require hi < cutoff - partitionSize (one bucket of headroom) so that
+    // the partition immediately adjacent to the retention boundary is never
+    // dropped until a full extra partition-size has elapsed.
+    if (p.hiLedger >= cutoff - BigInt(cfg.partitionSize)) continue;
 
     const processed = await isFullyProcessed(pool, p.tableName);
     if (!processed) {

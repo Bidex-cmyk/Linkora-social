@@ -245,7 +245,7 @@ describe("RawEventsRetentionManager.runOnce", () => {
     pool.onQuery(() => []);
 
     const mgr = new RawEventsRetentionManager(pool as never, BASE_CFG);
-    await mgr.runOnce(500_000n);
+    await mgr.runOnce(5_000_000n);
 
     // Should have issued at least the partitioned check + to_regclass + version + list
     expect(pool.queries.length).toBeGreaterThanOrEqual(4);
