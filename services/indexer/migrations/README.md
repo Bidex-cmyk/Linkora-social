@@ -1,7 +1,7 @@
 # Indexer database migrations
 
 SQL migrations for the indexer's PostgreSQL schema. Files apply in filename
-order (`001_…` → `012_…`). They are validated on every PR by the
+order (`001_…` → `013_…`). They are validated on every PR by the
 [Migration Tests](../../../.github/workflows/migrations.yml) workflow — see
 [Running the tests](#running-the-tests).
 

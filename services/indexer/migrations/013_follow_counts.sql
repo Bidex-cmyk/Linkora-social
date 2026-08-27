@@ -1,4 +1,4 @@
--- Migration: Create follow_counts table and sync triggers
+-- Migration 013: Create follow_counts table and sync triggers
 
 CREATE TABLE IF NOT EXISTS follow_counts (
     user_address TEXT PRIMARY KEY,
