@@ -26,7 +26,53 @@ import {
 } from "crypto";
 import express, { Request, Response } from "express";
 import { requestLoggingMiddleware } from "../../logger";
-import { rateLimitRead, rateLimitWrite, resetRateLimiter, RateLimiter } from "../rateLimit";
+import {
+  rateLimitRead,
+  rateLimitWrite,
+  resetRateLimiter,
+  RateLimiter,
+  getClientIP,
+  isIpInCidr,
+  normalizeIp,
+} from "../rateLimit";
+
+describe("getClientIP & Trusted Proxy validation", () => {
+  it("normalizes IPv4 and IPv6-mapped IPv4 addresses", () => {
+    expect(normalizeIp("1.2.3.4")).toBe("1.2.3.4");
+    expect(normalizeIp("::ffff:1.2.3.4")).toBe("1.2.3.4");
+  });
+
+  it("validates CIDR matches correctly", () => {
+    expect(isIpInCidr("10.0.0.5", "10.0.0.0/8")).toBe(true);
+    expect(isIpInCidr("172.16.1.1", "172.16.0.0/12")).toBe(true);
+    expect(isIpInCidr("192.168.1.100", "192.168.0.0/16")).toBe(true);
+    expect(isIpInCidr("203.0.113.1", "10.0.0.0/8")).toBe(false);
+  });
+
+  it("ignores spoofed X-Forwarded-For from untrusted direct connection", () => {
+    const req = {
+      headers: { "x-forwarded-for": "1.2.3.4" },
+      socket: { remoteAddress: "203.0.113.50" },
+    };
+    expect(getClientIP(req, ["10.0.0.0/8", "127.0.0.1"])).toBe("203.0.113.50");
+  });
+
+  it("trusts X-Forwarded-For header when connection comes from trusted proxy", () => {
+    const req = {
+      headers: { "x-forwarded-for": "198.51.100.25" },
+      socket: { remoteAddress: "10.0.0.1" },
+    };
+    expect(getClientIP(req, ["10.0.0.0/8"])).toBe("198.51.100.25");
+  });
+
+  it("extracts true client IP from multi-hop X-Forwarded-For header", () => {
+    const req = {
+      headers: { "x-forwarded-for": "198.51.100.25, 10.0.0.2" },
+      socket: { remoteAddress: "10.0.0.1" },
+    };
+    expect(getClientIP(req, ["10.0.0.0/8"])).toBe("198.51.100.25");
+  });
+});
 import { requireStellarAuth } from "../stellarAuth";
 
 // ── Mock @stellar/stellar-sdk to avoid ESM dep chain ─────────────────────────

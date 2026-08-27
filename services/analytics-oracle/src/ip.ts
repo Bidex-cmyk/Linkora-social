@@ -1,14 +1,3 @@
-/**
- * Rate limiting middleware using express-rate-limit.
- *
- * Environment variables:
- *   RATE_LIMIT_ANON_RPM  - requests per minute for anonymous IPs (default: 100)
- *   RATE_LIMIT_AUTH_RPM  - requests per minute for authenticated users (default: 300)
- */
-
-import { rateLimit } from "express-rate-limit";
-import { NextFunction, Request, Response } from "express";
-
 export const DEFAULT_TRUSTED_PROXIES = [
   "127.0.0.1/32",
   "127.0.0.1",
@@ -67,8 +56,9 @@ export function getClientIP(
 ): string {
   const trustedList =
     customTrustedProxies ??
-    (process.env.TRUSTED_PROXIES
-      ? process.env.TRUSTED_PROXIES.split(",")
+    (process.env["TRUSTED_PROXIES"]
+      ? process.env["TRUSTED_PROXIES"]
+          .split(",")
           .map((s) => s.trim())
           .filter(Boolean)
       : DEFAULT_TRUSTED_PROXIES);
@@ -105,44 +95,4 @@ export function getClientIP(
   }
 
   return ips[0];
-}
-
-const RATE_LIMIT_ANON_RPM = parseInt(process.env.RATE_LIMIT_ANON_RPM || "100", 10);
-const RATE_LIMIT_AUTH_RPM = parseInt(process.env.RATE_LIMIT_AUTH_RPM || "300", 10);
-
-export const anonLimiter = rateLimit({
-  windowMs: 60_000,
-  limit: RATE_LIMIT_ANON_RPM,
-  keyGenerator: (req: Request) =>
-    (req as Request & { stellarAddress?: string }).stellarAddress || getClientIP(req),
-  standardHeaders: "draft-8",
-  legacyHeaders: false,
-  handler: (_req: Request, res: Response) => {
-    res.status(429).json({
-      error: "Rate Limit Exceeded",
-      message: `Max ${RATE_LIMIT_ANON_RPM} requests per minute per IP`,
-    });
-  },
-});
-
-export const authLimiter = rateLimit({
-  windowMs: 60_000,
-  limit: RATE_LIMIT_AUTH_RPM,
-  keyGenerator: (req: Request) =>
-    (req as Request & { stellarAddress?: string }).stellarAddress || getClientIP(req),
-  standardHeaders: "draft-8",
-  legacyHeaders: false,
-  handler: (_req: Request, res: Response) => {
-    res.status(429).json({
-      error: "Rate Limit Exceeded",
-      message: `Max ${RATE_LIMIT_AUTH_RPM} requests per minute per authenticated user`,
-    });
-  },
-});
-
-export function rateLimitMiddleware(req: Request, res: Response, next: NextFunction): void {
-  if ((req as Request & { stellarAddress?: string }).stellarAddress) {
-    return authLimiter(req, res, next);
-  }
-  return anonLimiter(req, res, next);
 }

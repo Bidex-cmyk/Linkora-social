@@ -2,7 +2,7 @@ import express, { Request, Response, NextFunction } from "express";
 import { Pool as PgPool } from "pg";
 import { Database } from "../db";
 import { logger } from "../logger";
-import { rateLimit as apiLimiter, rateLimitWrite } from "../middleware/rateLimit";
+import { rateLimit, rateLimitWrite } from "../middleware/rateLimit";
 import { requireStellarAuth } from "../middleware/stellarAuth";
 import { createProfilesRouter } from "./routes/profiles";
 import { createPostsRouter } from "./routes/posts";
@@ -68,8 +68,13 @@ export function createApp(db: Database, pg?: PgPool): express.Application {
     // DB check
     let dbStatus = "disconnected";
     try {
-      if (pg) { await pg.query("SELECT 1"); dbStatus = "connected"; }
-    } catch { /* keep disconnected */ }
+      if (pg) {
+        await pg.query("SELECT 1");
+        dbStatus = "connected";
+      }
+    } catch {
+      /* keep disconnected */
+    }
 
     // RPC check
     let rpcStatus = "unreachable";
@@ -78,13 +83,17 @@ export function createApp(db: Database, pg?: PgPool): express.Application {
       if (rpcUrl) {
         const ctrl = new AbortController();
         const t = setTimeout(() => ctrl.abort(), 3000);
-        await fetch(`${rpcUrl}`, { method: "POST", signal: ctrl.signal,
+        await fetch(`${rpcUrl}`, {
+          method: "POST",
+          signal: ctrl.signal,
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getLatestLedger", params: [] }),
         }).finally(() => clearTimeout(t));
         rpcStatus = "reachable";
       }
-    } catch { /* keep unreachable */ }
+    } catch {
+      /* keep unreachable */
+    }
 
     const ok = dbStatus === "connected" && rpcStatus === "reachable";
     res.status(ok ? 200 : 503).json({
@@ -94,7 +103,9 @@ export function createApp(db: Database, pg?: PgPool): express.Application {
       commit,
       db: dbStatus,
       rpc: rpcStatus,
-      backfill: backfill.active ? { active: true, fromLedger: backfill.fromLedger, toLedger: backfill.toLedger } : { active: false },
+      backfill: backfill.active
+        ? { active: true, fromLedger: backfill.fromLedger, toLedger: backfill.toLedger }
+        : { active: false },
     });
   });
 
