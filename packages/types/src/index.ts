@@ -37,3 +37,7 @@ export {
 } from "./errors";
 
 export type { ErrorCode, ErrorResponseBody, ErrorResponse } from "./errors";
+
+export { AUTH_MESSAGE_VERSION, buildAuthMessage, canonicalizeAuthPath } from "./auth";
+
+export type { AuthMessageParts } from "./auth";

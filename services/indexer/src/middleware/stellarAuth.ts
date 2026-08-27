@@ -1,7 +1,9 @@
 import { Request, Response, NextFunction } from "express";
 import { Keypair } from "@stellar/stellar-sdk";
 import { createHash } from "crypto";
+import { buildAuthMessage, canonicalizeAuthPath } from "@linkora/types/src/auth";
 import { logger } from "../logger";
+import "./rawBody";
 
 const SIGNATURE_TIMESTAMP_TOLERANCE_MS = 30_000;
 
@@ -46,9 +48,33 @@ function parseStellarSignatureHeader(
   }
 }
 
-function verifyEd25519Signature(address: string, timestamp: number, signature: string): boolean {
+/**
+ * Hex SHA-256 of the exact bytes the client sent.
+ *
+ * A request with no JSON body never reaches body-parser's `verify` hook, so an
+ * absent `rawBody` hashes as the empty string — the same thing the client does
+ * when it has nothing to send.
+ */
+function hashRequestBody(req: Request): string {
+  return createHash("sha256")
+    .update(req.rawBody ?? Buffer.alloc(0))
+    .digest("hex");
+}
+
+function verifyEd25519Signature(
+  req: Request,
+  address: string,
+  timestamp: number,
+  signature: string
+): boolean {
   try {
-    const message = `${address}:${timestamp}`;
+    const message = buildAuthMessage({
+      method: req.method,
+      canonicalPath: canonicalizeAuthPath(req.originalUrl),
+      address,
+      timestamp,
+      bodyHash: hashRequestBody(req),
+    });
     const hash = createHash("sha256").update(message).digest();
     const keypair = Keypair.fromPublicKey(address);
     return keypair.verify(hash, Buffer.from(signature, "base64"));
@@ -131,7 +157,7 @@ export function requireStellarAuth(req: Request, res: Response, next: NextFuncti
     return;
   }
 
-  if (!verifyEd25519Signature(address, timestamp, signature)) {
+  if (!verifyEd25519Signature(req, address, timestamp, signature)) {
     logger.warn(
       {
         requestId: req.context?.requestId,

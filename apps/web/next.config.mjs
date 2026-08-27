@@ -5,7 +5,7 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  transpilePackages: ['linkora-sdk'],
+  transpilePackages: ['linkora-sdk', '@linkora/types'],
   eslint: {
     ignoreDuringBuilds: true,
   },
