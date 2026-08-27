@@ -105,8 +105,7 @@ export async function withSerializationRetry<T>(
     Math.floor(options.maxAttempts ?? DEFAULT_SERIALIZATION_ATTEMPTS)
   );
   const sleep =
-    options.sleep ??
-    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
   for (let attempt = 1; ; attempt += 1) {
     try {
@@ -153,8 +152,7 @@ export class IngestPipeline {
       Math.floor(opts.serializationRetryAttempts ?? DEFAULT_SERIALIZATION_ATTEMPTS)
     );
     this.sleep =
-      opts.sleep ??
-      ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+      opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   }
 
   /** Read the last committed cursor for this stream (0 if none). */
@@ -179,10 +177,10 @@ export class IngestPipeline {
     }
 
     if (this.transactionIsolation === "serializable") {
-      return withSerializationRetry(
-        () => this.processBatchOnce(events),
-        { maxAttempts: this.serializationRetryAttempts, sleep: this.sleep }
-      );
+      return withSerializationRetry(() => this.processBatchOnce(events), {
+        maxAttempts: this.serializationRetryAttempts,
+        sleep: this.sleep,
+      });
     }
 
     return this.processBatchOnce(events);
@@ -215,15 +213,24 @@ export class IngestPipeline {
         await this.domainProcessor(client, ev);
       }
 
-      // (3) Mark processed and advance the cursor — the LAST statements before
-      //     commit, so the cursor never moves ahead of a committed domain write.
-      for (const ev of events) {
-        await client.query(
-          `UPDATE raw_events SET processed_at = NOW()
-           WHERE ledger_sequence = $1 AND event_index = $2`,
-          [ev.ledgerSequence, ev.eventIndex]
-        );
-      }
+      // (3) Mark processed in a single bulk UPDATE — one round-trip instead of N.
+      //     We pass all (ledger_sequence, event_index) pairs as a typed composite
+      //     array and let PostgreSQL join against them.  This is the LAST write
+      //     before commit so the cursor never advances ahead of a committed
+      //     domain write.
+      //
+      //     SQL: UPDATE raw_events SET processed_at = NOW()
+      //          WHERE (ledger_sequence, event_index) = ANY($1::record[])
+      //
+      //     The literal value fed to $1 is built as a Postgres array-of-rows
+      //     string:  '{"(seq1,idx1)","(seq2,idx2)", …}'
+      const pairs = events.map((ev) => `"(${ev.ledgerSequence},${ev.eventIndex})"`).join(",");
+      await client.query(
+        `UPDATE raw_events
+            SET processed_at = NOW()
+          WHERE (ledger_sequence, event_index) = ANY($1::record[])`,
+        [`{${pairs}}`]
+      );
 
       const newCursor = events.reduce((m, e) => Math.max(m, e.ledgerSequence), 0);
       await client.query(
