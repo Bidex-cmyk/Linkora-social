@@ -35,7 +35,8 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Trigger
+-- Trigger (guarded so re-applying this migration is idempotent)
+DROP TRIGGER IF EXISTS update_follow_counts_trigger ON follows;
 CREATE TRIGGER update_follow_counts_trigger
 AFTER INSERT OR DELETE ON follows
 FOR EACH ROW EXECUTE FUNCTION sync_follow_counts();
