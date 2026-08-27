@@ -170,6 +170,10 @@ describe("rateLimitRead middleware (100 req/min per IP)", () => {
     resetRateLimiter();
 
     app = express();
+    // Mirrors the production app (api/index.ts): trust exactly one proxy hop
+    // so `req.ip` resolves from the rightmost X-Forwarded-For entry instead
+    // of a client-supplied one.
+    app.set("trust proxy", 1);
     app.use(requestLoggingMiddleware);
     app.get("/test", rateLimitRead, (_req: Request, res: Response) => {
       res.json({ ok: true });
@@ -228,6 +232,36 @@ describe("rateLimitRead middleware (100 req/min per IP)", () => {
     const retryAfter = parseInt(res.headers["retry-after"] as string, 10);
     expect(retryAfter).toBeGreaterThan(0);
     expect(retryAfter).toBeLessThanOrEqual(60);
+  }, 30_000);
+
+  it("does not let a spoofed X-Forwarded-For prefix reset the limit", async () => {
+    // With one trusted proxy hop, the client-supplied portion of the header
+    // is everything except the rightmost entry (the address our own proxy
+    // observed). Rotating the spoofed prefix must not grant a fresh budget.
+    const realClientIp = "10.0.0.9";
+    for (let i = 0; i < 100; i++) {
+      const res = await request(app)
+        .get("/test")
+        .set("x-forwarded-for", `${i}.${i}.${i}.${i}, ${realClientIp}`);
+      expect(res.status).toBe(200);
+    }
+
+    const spoofed = await request(app)
+      .get("/test")
+      .set("x-forwarded-for", `203.0.113.${Math.floor(Math.random() * 254) + 1}, ${realClientIp}`);
+    expect(spoofed.status).toBe(429);
+  }, 30_000);
+
+  it("still isolates genuinely different clients behind the trusted proxy", async () => {
+    for (let i = 0; i < 100; i++) {
+      await request(app).get("/test").set("x-forwarded-for", "1.2.3.4, 10.0.0.10");
+    }
+    expect(
+      (await request(app).get("/test").set("x-forwarded-for", "1.2.3.4, 10.0.0.10")).status
+    ).toBe(429);
+    expect(
+      (await request(app).get("/test").set("x-forwarded-for", "1.2.3.4, 10.0.0.11")).status
+    ).toBe(200);
   }, 30_000);
 });
 

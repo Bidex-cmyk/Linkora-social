@@ -1,8 +1,11 @@
 import { Database } from "../database";
 
 interface FakeRow {
+  sender_address: string;
+  idempotency_key: string;
   response_status: number;
   response_body: unknown;
+  request_fingerprint: string;
   created_at: Date;
 }
 
@@ -14,28 +17,53 @@ interface FakeQueryResult {
 /**
  * Minimal in-memory stand-in for the subset of Postgres semantics the
  * idempotency queries rely on (INSERT ... ON CONFLICT DO NOTHING RETURNING,
- * conditional SELECT, UPDATE, and TTL-based DELETE).
+ * conditional SELECT, UPDATE, and TTL-based DELETE), keyed on the composite
+ * (sender_address, idempotency_key) primary key.
  */
 class FakePool {
   rows = new Map<string, FakeRow>();
 
+  private rowKey(sender: string, key: string): string {
+    return `${sender} ${key}`;
+  }
+
   async query(text: string, values: unknown[] = []): Promise<FakeQueryResult> {
     if (text.includes("INSERT INTO message_idempotency")) {
-      const [key, pendingStatus] = values as [string, number];
-      if (this.rows.has(key)) {
+      const [sender, key, pendingStatus, fingerprint] = values as [string, string, number, string];
+      const rowKey = this.rowKey(sender, key);
+      if (this.rows.has(rowKey)) {
         return { rows: [], rowCount: 0 };
       }
-      this.rows.set(key, {
+      this.rows.set(rowKey, {
+        sender_address: sender,
+        idempotency_key: key,
         response_status: pendingStatus,
         response_body: {},
+        request_fingerprint: fingerprint,
         created_at: new Date(),
       });
       return { rows: [{ idempotency_key: key }], rowCount: 1 };
     }
 
+    if (text.includes("SELECT response_status, response_body, request_fingerprint")) {
+      const [sender, key] = values as [string, string];
+      const row = this.rows.get(this.rowKey(sender, key));
+      if (!row) return { rows: [], rowCount: 0 };
+      return {
+        rows: [
+          {
+            response_status: row.response_status,
+            response_body: row.response_body,
+            request_fingerprint: row.request_fingerprint,
+          },
+        ],
+        rowCount: 1,
+      };
+    }
+
     if (text.includes("SELECT response_status, response_body")) {
-      const [key, pendingStatus] = values as [string, number];
-      const row = this.rows.get(key);
+      const [sender, key, pendingStatus] = values as [string, string, number];
+      const row = this.rows.get(this.rowKey(sender, key));
       if (!row || row.response_status === pendingStatus) {
         return { rows: [], rowCount: 0 };
       }
@@ -46,8 +74,8 @@ class FakePool {
     }
 
     if (text.includes("UPDATE message_idempotency")) {
-      const [key, status, body] = values as [string, number, string];
-      const row = this.rows.get(key);
+      const [sender, key, status, body] = values as [string, string, number, string];
+      const row = this.rows.get(this.rowKey(sender, key));
       if (!row) return { rows: [], rowCount: 0 };
       row.response_status = status;
       row.response_body = JSON.parse(body);
@@ -61,9 +89,9 @@ class FakePool {
       const hours = Math.max(0, Math.floor(ttlHours));
       const cutoff = Date.now() - hours * 3_600_000;
       let deleted = 0;
-      for (const [key, row] of this.rows) {
+      for (const [rowKey, row] of this.rows) {
         if (row.created_at.getTime() < cutoff) {
-          this.rows.delete(key);
+          this.rows.delete(rowKey);
           deleted++;
         }
       }
@@ -80,23 +108,32 @@ function createTestDatabase(pool: FakePool): Database {
   return db;
 }
 
+const SENDER_A = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const SENDER_B = "GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+const FINGERPRINT_1 = "fp-1";
+const FINGERPRINT_2 = "fp-2";
+
 describe("Database idempotency methods", () => {
   it("claims a brand-new key", async () => {
     const db = createTestDatabase(new FakePool());
-    const result = await db.claimIdempotencyKey("11111111-1111-1111-1111-111111111111");
+    const result = await db.claimIdempotencyKey(
+      SENDER_A,
+      "11111111-1111-1111-1111-111111111111",
+      FINGERPRINT_1
+    );
     expect(result.status).toBe("claimed");
   });
 
-  it("replays the cached response for a completed duplicate key", async () => {
+  it("replays the cached response for a completed duplicate key from the same sender", async () => {
     const pool = new FakePool();
     const db = createTestDatabase(pool);
     const key = "22222222-2222-2222-2222-222222222222";
 
-    const first = await db.claimIdempotencyKey(key);
+    const first = await db.claimIdempotencyKey(SENDER_A, key, FINGERPRINT_1);
     expect(first.status).toBe("claimed");
-    await db.completeIdempotencyKey(key, 201, { message_id: "abc" });
+    await db.completeIdempotencyKey(SENDER_A, key, 201, { message_id: "abc" });
 
-    const second = await db.claimIdempotencyKey(key);
+    const second = await db.claimIdempotencyKey(SENDER_A, key, FINGERPRINT_1);
     expect(second).toEqual({
       status: "cached",
       responseStatus: 201,
@@ -108,13 +145,43 @@ describe("Database idempotency methods", () => {
     const pool = new FakePool();
     const db = createTestDatabase(pool);
 
-    await db.claimIdempotencyKey("33333333-3333-3333-3333-333333333333");
-    await db.completeIdempotencyKey("33333333-3333-3333-3333-333333333333", 201, {
+    await db.claimIdempotencyKey(SENDER_A, "33333333-3333-3333-3333-333333333333", FINGERPRINT_1);
+    await db.completeIdempotencyKey(SENDER_A, "33333333-3333-3333-3333-333333333333", 201, {
       message_id: "a",
     });
 
-    const other = await db.claimIdempotencyKey("44444444-4444-4444-4444-444444444444");
+    const other = await db.claimIdempotencyKey(
+      SENDER_A,
+      "44444444-4444-4444-4444-444444444444",
+      FINGERPRINT_1
+    );
     expect(other.status).toBe("claimed");
+  });
+
+  it("treats the same key from a different sender as independent (not a collision)", async () => {
+    const pool = new FakePool();
+    const db = createTestDatabase(pool);
+    const key = "88888888-8888-8888-8888-888888888888";
+
+    const first = await db.claimIdempotencyKey(SENDER_A, key, FINGERPRINT_1);
+    expect(first.status).toBe("claimed");
+    await db.completeIdempotencyKey(SENDER_A, key, 201, { message_id: "from-a" });
+
+    // Sender B reusing the exact same key must not be dropped or merged with A's message.
+    const second = await db.claimIdempotencyKey(SENDER_B, key, FINGERPRINT_2);
+    expect(second.status).toBe("claimed");
+  });
+
+  it("returns a conflict when the same sender reuses a key with a different payload", async () => {
+    const pool = new FakePool();
+    const db = createTestDatabase(pool);
+    const key = "99999999-9999-9999-9999-999999999999";
+
+    const first = await db.claimIdempotencyKey(SENDER_A, key, FINGERPRINT_1);
+    expect(first.status).toBe("claimed");
+
+    const second = await db.claimIdempotencyKey(SENDER_A, key, FINGERPRINT_2);
+    expect(second.status).toBe("conflict");
   });
 
   it("reports in_progress for a concurrent duplicate before completion", async () => {
@@ -122,14 +189,14 @@ describe("Database idempotency methods", () => {
     const db = createTestDatabase(pool);
     const key = "55555555-5555-5555-5555-555555555555";
 
-    const first = await db.claimIdempotencyKey(key);
+    const first = await db.claimIdempotencyKey(SENDER_A, key, FINGERPRINT_1);
     expect(first.status).toBe("claimed");
 
     // A second request racing in before the first has finished processing.
-    const second = await db.claimIdempotencyKey(key);
+    const second = await db.claimIdempotencyKey(SENDER_A, key, FINGERPRINT_1);
     expect(second.status).toBe("in_progress");
 
-    expect(await db.getIdempotencyResponse(key)).toBeNull();
+    expect(await db.getIdempotencyResponse(SENDER_A, key)).toBeNull();
   });
 
   it("allows reprocessing a key after it has expired and been cleaned up", async () => {
@@ -137,16 +204,16 @@ describe("Database idempotency methods", () => {
     const db = createTestDatabase(pool);
     const key = "66666666-6666-6666-6666-666666666666";
 
-    await db.claimIdempotencyKey(key);
-    await db.completeIdempotencyKey(key, 201, { message_id: "xyz" });
+    await db.claimIdempotencyKey(SENDER_A, key, FINGERPRINT_1);
+    await db.completeIdempotencyKey(SENDER_A, key, 201, { message_id: "xyz" });
 
     // Backdate the entry past the 24h TTL window.
-    pool.rows.get(key)!.created_at = new Date(Date.now() - 25 * 3_600_000);
+    pool.rows.get(`${SENDER_A} ${key}`)!.created_at = new Date(Date.now() - 25 * 3_600_000);
 
     const deleted = await db.deleteExpiredIdempotencyKeys(24);
     expect(deleted).toBe(1);
 
-    const reclaimed = await db.claimIdempotencyKey(key);
+    const reclaimed = await db.claimIdempotencyKey(SENDER_A, key, FINGERPRINT_1);
     expect(reclaimed.status).toBe("claimed");
   });
 
@@ -155,11 +222,11 @@ describe("Database idempotency methods", () => {
     const db = createTestDatabase(pool);
     const key = "77777777-7777-7777-7777-777777777777";
 
-    await db.claimIdempotencyKey(key);
-    await db.completeIdempotencyKey(key, 201, {});
+    await db.claimIdempotencyKey(SENDER_A, key, FINGERPRINT_1);
+    await db.completeIdempotencyKey(SENDER_A, key, 201, {});
 
     const deleted = await db.deleteExpiredIdempotencyKeys(24);
     expect(deleted).toBe(0);
-    expect(await db.getIdempotencyResponse(key)).not.toBeNull();
+    expect(await db.getIdempotencyResponse(SENDER_A, key)).not.toBeNull();
   });
 });
