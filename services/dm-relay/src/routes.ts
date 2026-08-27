@@ -22,11 +22,25 @@ import {
   conflictError,
   internalError,
 } from "@linkora/types/src/errors";
+import type { InflightCounter } from "./inflight-counter";
 
 const wsClients = new Map<string, Set<WebSocket>>();
 const typingRateLimitMap = new Map<string, number>();
 
-export function registerWsClient(address: string, ws: WebSocket): void {
+/**
+ * Register a WebSocket client for a given Stellar address.
+ *
+ * `inflightCounter` is optional to preserve backwards-compatibility with
+ * tests that call this function without a counter.  When provided, every DB
+ * write that is triggered by an incoming WS message increments the counter
+ * before the write and decrements it in the `finally` block, so the
+ * graceful-shutdown handler can wait for all writes to complete.
+ */
+export function registerWsClient(
+  address: string,
+  ws: WebSocket,
+  inflightCounter?: InflightCounter
+): void {
   if (!wsClients.has(address)) wsClients.set(address, new Set());
   wsClients.get(address)!.add(ws);
 
@@ -63,12 +77,19 @@ export function registerWsClient(address: string, ws: WebSocket): void {
         }
         typingRateLimitMap.set(rateLimitKey, now);
 
-        logger.info({ sender: address, recipient }, "Typing status notification dispatched");
-
-        pushToRecipient(recipient, {
-          type: "typing_status",
-          sender: address,
-        });
+        // Track this DB write so the shutdown handler can wait for it.
+        inflightCounter?.increment();
+        // typing_status is push-only and does not touch the DB directly,
+        // so decrement immediately after dispatching.
+        try {
+          logger.info({ sender: address, recipient }, "Typing status notification dispatched");
+          pushToRecipient(recipient, {
+            type: "typing_status",
+            sender: address,
+          });
+        } finally {
+          inflightCounter?.decrement();
+        }
       }
     } catch (e) {
       // Ignore invalid JSON from clients
