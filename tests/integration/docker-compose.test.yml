@@ -6,8 +6,9 @@ version: "3.9"
 # Spins up:
 #   1. Local Stellar standalone network (quickstart)
 #   2. PostgreSQL (shared by indexer & dm-relay)
-#   3. Indexer service (configured for local Stellar)
-#   4. DM relay service
+#   3. Redis (shared rate-limit store for both services)
+#   4. Indexer service (configured for local Stellar)
+#   5. DM relay service
 #
 # All services have health checks; the test runner waits for readiness.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -55,6 +56,20 @@ services:
       retries: 10
       start_period: 10s
 
+  # ── Redis (shared rate-limit store) ──────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
   # ── Indexer ──────────────────────────────────────────────────────────────────
   indexer:
     build:
@@ -70,6 +85,7 @@ services:
       START_LEDGER: ${E2E_START_LEDGER:-1}
       PORT: "3000"
       NODE_ENV: test
+      REDIS_URL: redis://redis:6379
       # Speed up backfill detection for test
       BACKFILL_MAX_DEPTH_LEDGERS: "100000"
       BACKFILL_BATCH_SIZE: "200"
@@ -80,6 +96,8 @@ services:
       - "3000:3000"
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health/ready"]
@@ -100,6 +118,7 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-linkora}:${POSTGRES_PASSWORD:-linkora}@postgres:5432/${POSTGRES_DB:-linkora}_dm_relay
       PORT: "3001"
       NODE_ENV: test
+      REDIS_URL: redis://redis:6379
       STELLAR_NETWORK: Standalone
       CORS_ORIGIN: "*"
       MESSAGE_TTL_DAYS: "1"
@@ -108,6 +127,8 @@ services:
       - "3001:3001"
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3001/health/ready"]

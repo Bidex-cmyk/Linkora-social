@@ -24,6 +24,23 @@ services:
       retries: 5
       start_period: 10s
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Rate-limit counters only — losing them on restart costs at most one
+    # window of enforcement, so no persistence is configured.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
   indexer:
     build:
       context: ./services/indexer
@@ -34,6 +51,9 @@ services:
       CONTRACT_ID: ${CONTRACT_ID:-}
       START_LEDGER: ${START_LEDGER:-0}
       PORT: 3000
+      # Required for shared rate limiting. Without it each replica keeps its
+      # own counters and the effective limit becomes limit x replicaCount.
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
     ports:
       - "3000:3000"
     networks:
@@ -41,6 +61,8 @@ services:
       - database
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health/ready"]
@@ -57,6 +79,8 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-linkora}:${POSTGRES_PASSWORD:-linkora}@postgres:5432/${POSTGRES_DB:-linkora}_dm_relay
       PORT: 3001
       STELLAR_NETWORK: ${STELLAR_NETWORK:-Testnet}
+      # Required for shared rate limiting (HTTP and WebSocket).
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
     ports:
       - "3001:3001"
     networks:
@@ -64,6 +88,8 @@ services:
       - database
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3001/health/ready"]
@@ -84,6 +110,8 @@ services:
       ORACLE_NAME: ${ORACLE_NAME:-default}
       WINDOW_LEDGERS: ${WINDOW_LEDGERS:-1000}
       PORT: 4000
+      # Required for shared rate limiting.
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
     ports:
       - "4000:4000"
     networks:
@@ -91,6 +119,8 @@ services:
       - database
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4000/health/ready"]

@@ -31,7 +31,20 @@
  * SHUTDOWN_TIMEOUT_MS         — Milliseconds to wait for in-flight requests to
  *                               drain before forcing the process to exit
  *                               (default 30 000).
+ *
+ * Rate limiting
+ * ─────────────
+ * REDIS_URL                   — Shared Redis endpoint backing the HTTP rate
+ *                               limiter. REQUIRED when NODE_ENV=production;
+ *                               without it every replica keeps its own counters
+ *                               and the effective limit becomes
+ *                               RATE_LIMIT × replicaCount.
+ * ALLOW_IN_MEMORY_RATE_LIMIT  — Explicit opt-out allowing the in-memory store
+ *                               in production. Only safe for single-replica
+ *                               deployments.
  */
+
+import { resolveRateLimitEnv } from "@linkora/types/src/rate-limit-env";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -68,6 +81,12 @@ export interface IndexerConfig {
   startLedger: number;
   port: number;
   scoreRefreshIntervalMinutes: number;
+
+  /**
+   * Shared Redis endpoint for the HTTP rate limiter. Undefined only when the
+   * service is allowed to run with per-instance in-memory counters.
+   */
+  redisUrl: string | undefined;
 
   // Streaming / rate limiting
   rpcRateLimitPerSec: number | undefined;
@@ -129,6 +148,10 @@ export interface BackfillConfig {
 
 /** Parse and validate configuration from environment variables. */
 export function loadConfig(): IndexerConfig {
+  // Throws when NODE_ENV=production and no shared rate-limit store is
+  // configured, so a deployment can never silently run with per-replica limits.
+  const rateLimitEnv = resolveRateLimitEnv("indexer");
+
   const raw = {
     databaseUrl: requireEnv("DATABASE_URL"),
     stellarRpcUrl: requireEnv("STELLAR_RPC_URL"),
@@ -136,6 +159,8 @@ export function loadConfig(): IndexerConfig {
     startLedger: parseInt(requireEnv("START_LEDGER"), 10),
     port: optionalNonNegInt("PORT", 3000),
     scoreRefreshIntervalMinutes: optionalInt("SCORE_REFRESH_INTERVAL_MINUTES", 5),
+
+    redisUrl: rateLimitEnv.redisUrl,
 
     rpcRateLimitPerSec: process.env.RPC_RATE_LIMIT_PER_SEC
       ? parseInt(process.env.RPC_RATE_LIMIT_PER_SEC, 10)
@@ -168,7 +193,9 @@ export function loadConfig(): IndexerConfig {
   };
 
   if (!Number.isFinite(raw.startLedger) || raw.startLedger < 0) {
-    throw new Error(`START_LEDGER must be a non-negative integer, got: ${process.env.START_LEDGER}`);
+    throw new Error(
+      `START_LEDGER must be a non-negative integer, got: ${process.env.START_LEDGER}`
+    );
   }
 
   return raw;

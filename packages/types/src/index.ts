@@ -38,6 +38,15 @@ export {
 
 export type { ErrorCode, ErrorResponseBody, ErrorResponse } from "./errors";
 
-export { AUTH_MESSAGE_VERSION, buildAuthMessage, canonicalizeAuthPath } from "./auth";
+export {
+  RateLimitConfigError,
+  resolveRateLimitEnv,
+  inMemoryRateLimitWarning,
+} from "./rate-limit-env";
 
-export type { AuthMessageParts } from "./auth";
+export type {
+  RateLimitStoreKind,
+  RateLimitStoreStatus,
+  RateLimitEnv,
+  ResolvedRateLimitEnv,
+} from "./rate-limit-env";

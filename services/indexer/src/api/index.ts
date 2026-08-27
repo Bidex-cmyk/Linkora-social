@@ -3,7 +3,7 @@ import helmet from "helmet";
 import { Pool as PgPool } from "pg";
 import { Database } from "../db";
 import { logger, requestLoggingMiddleware } from "../logger";
-import { rateLimit, rateLimitWrite } from "../middleware/rateLimit";
+import { rateLimit, rateLimitWrite, getRateLimitStoreStatus } from "../middleware/rateLimit";
 import { requireStellarAuth } from "../middleware/stellarAuth";
 import { jsonWithRawBody } from "../middleware/rawBody";
 import { validateBody } from "../middleware/validate";
@@ -115,14 +115,23 @@ export function createApp(
     const backfill = getBackfillState();
     const readiness = monitor
       ? await monitor.checkReadiness()
-      : { ready: false, checks: undefined };
+      : { ready: false, degraded: true, checks: undefined };
+    // Read through the monitor so the top-level field and `checks.rateLimiter`
+    // can never disagree; fall back to the singleton when there is no monitor.
+    const rateLimiter = readiness.checks?.rateLimiter ?? getRateLimitStoreStatus();
+
+    // A per-instance rate limiter is a degradation, not an outage: the pod can
+    // still serve traffic, so it keeps returning 200 and stays in the load
+    // balancer while flagging that limits are not shared across replicas.
+    const status = readiness.ready ? (readiness.degraded ? "degraded" : "ok") : "degraded";
 
     res.status(readiness.ready ? 200 : 503).json({
-      status: readiness.ready ? "ok" : "degraded",
+      status,
       uptime,
       version,
       commit,
       checks: readiness.checks,
+      rateLimiter,
       backfill: backfill.active
         ? { active: true, fromLedger: backfill.fromLedger, toLedger: backfill.toLedger }
         : { active: false },
@@ -144,6 +153,7 @@ export function createApp(
     const readiness = await monitor.checkReadiness();
     res.status(readiness.ready ? 200 : 503).json({
       status: readiness.ready ? "ready" : "not_ready",
+      degraded: readiness.degraded,
       checks: readiness.checks,
     });
   });

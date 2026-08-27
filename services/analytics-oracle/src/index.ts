@@ -12,6 +12,7 @@ import { submitAttestation } from "./submitter.js";
 import { AnalyticsReport, SignedAttestation } from "./types.js";
 import { logger } from "./logger.js";
 import { rateLimiter, initRateLimiter } from "./middleware/rate-limiter.js";
+import { loadRateLimitConfig } from "./config.js";
 import { createHealthRouter } from "./routes/health.js";
 import { validateParams } from "./middleware/validate.js";
 import { AttestationCache } from "./attestation-cache.js";
@@ -25,6 +26,11 @@ function requireEnv(name: string): string {
   if (!v) throw new Error(`Missing env: ${name}`);
   return v;
 }
+
+// Validate the rate-limiting environment before anything else binds a port:
+// this throws when NODE_ENV=production and no shared Redis store is
+// configured, so a scaled deployment can never boot with per-replica limits.
+loadRateLimitConfig();
 
 const DATABASE_URL = requireEnv("DATABASE_URL");
 const SOROBAN_RPC_URL = requireEnv("SOROBAN_RPC_URL");

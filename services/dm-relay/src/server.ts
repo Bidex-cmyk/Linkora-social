@@ -24,7 +24,12 @@ import {
   validateContentType,
 } from "./middleware";
 import { messageAuthMiddleware, addressOwnershipMiddleware } from "./middleware/auth";
-import { rateLimitMiddleware, initRateLimiters } from "./middleware/rateLimit";
+import {
+  rateLimitMiddleware,
+  initRateLimiters,
+  closeRateLimiters,
+  isWsIpRateLimited,
+} from "./middleware/rateLimit";
 import { createHealthRouter } from "./routes/health";
 import { logger } from "./logger";
 
@@ -137,10 +142,7 @@ async function createApp() {
   const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 
   const MAX_WS_CONNECTIONS_PER_ADDRESS = 5;
-  const WS_RATE_LIMIT_WINDOW_MS = 60_000;
-  const WS_RATE_LIMIT_MAX = 30;
   const wsConnectionCounts = new Map<string, number>();
-  const wsIpRateLimit = new Map<string, { count: number; resetAt: number }>();
 
   function getWsClientIp(req: http.IncomingMessage): string {
     const xff = req.headers["x-forwarded-for"];
@@ -148,26 +150,27 @@ async function createApp() {
     return req.socket.remoteAddress || "unknown";
   }
 
-  function isWsIpRateLimited(ip: string): boolean {
-    const now = Date.now();
-    const entry = wsIpRateLimit.get(ip);
-    if (!entry || now > entry.resetAt) {
-      wsIpRateLimit.set(ip, { count: 1, resetAt: now + WS_RATE_LIMIT_WINDOW_MS });
-      return false;
-    }
-    entry.count++;
-    return entry.count > WS_RATE_LIMIT_MAX;
-  }
-
+  // The handler is async because the rate-limit check now round-trips to
+  // Redis. `ws` never sees the rejection of an async listener, so anything
+  // that throws past the checks below would surface as an unhandled rejection
+  // and take the process down — hence the outer catch.
   wss.on("connection", (ws: WebSocket, req: http.IncomingMessage) => {
+    handleWsConnection(ws, req).catch((err) => {
+      logger.error({ err, ip: getWsClientIp(req) }, "WebSocket connection handler failed");
+      ws.close(1011, "Internal error");
+    });
+  });
+
+  async function handleWsConnection(ws: WebSocket, req: http.IncomingMessage): Promise<void> {
     const clientIp = getWsClientIp(req);
     const url = new URL(req.url ?? "/", "http://localhost");
     const address = url.searchParams.get("address") ?? "";
     const timestampStr = url.searchParams.get("timestamp") ?? "";
     const signature = url.searchParams.get("signature") ?? "";
 
-    // Rate limit per IP
-    if (isWsIpRateLimited(clientIp)) {
+    // Rate limit per IP. Backed by the same Redis store as the HTTP limiters,
+    // so the cap applies to the deployment as a whole rather than per replica.
+    if (await isWsIpRateLimited(clientIp)) {
       logger.warn({ ip: clientIp }, "WebSocket rate limit exceeded");
       ws.close(1008, "Rate limit exceeded");
       return;
@@ -219,7 +222,7 @@ async function createApp() {
       }
       logger.info({ address, ip: clientIp }, "WebSocket client disconnected");
     });
-  });
+  }
 
   // Graceful shutdown
   const gracefulShutdown = async (signal: string) => {
@@ -228,6 +231,7 @@ async function createApp() {
 
     wss.close();
     cleanupService.stop();
+    await closeRateLimiters();
     await database.close();
 
     logger.info("Graceful shutdown completed");
