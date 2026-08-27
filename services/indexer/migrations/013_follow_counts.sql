@@ -1,4 +1,4 @@
--- Migration: Create follow_counts table and sync triggers
+-- Migration 013: Create follow_counts table and sync triggers
 
 CREATE TABLE IF NOT EXISTS follow_counts (
     user_address TEXT PRIMARY KEY,
@@ -35,7 +35,8 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Trigger
-CREATE TRIGGER update_follow_counts_trigger
+-- Trigger (CREATE OR REPLACE is atomic and concurrency-safe; PG 14+ required,
+-- which is satisfied by our postgres:16 baseline).
+CREATE OR REPLACE TRIGGER update_follow_counts_trigger
 AFTER INSERT OR DELETE ON follows
 FOR EACH ROW EXECUTE FUNCTION sync_follow_counts();

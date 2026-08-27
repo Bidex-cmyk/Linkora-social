@@ -54,26 +54,42 @@ BEGIN
         RAISE EXCEPTION 'indexer_cursor is missing the processed_cursor column';
     END IF;
 
-    -- 5. raw_events.id must be unique so foreign keys can reference it.
+    -- 5. raw_events.id must be covered by a unique index so that foreign keys
+    --    can reference it.  Before migration 012 this is a single-column unique
+    --    index on raw_events(id).  After migration 012 raw_events is a
+    --    partitioned table (whose unique index must include the partition key),
+    --    so the single-column unique index lives on raw_events_legacy instead.
+    --    Accept either: a unique index on id in raw_events, OR a unique index
+    --    on id in raw_events_legacy (when that table exists).
     IF NOT EXISTS (
         SELECT 1
         FROM pg_index i
-        JOIN pg_class c ON c.oid = i.indexrelid
         JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey)
-        WHERE i.indrelid = 'raw_events'::regclass
+        WHERE i.indrelid IN (
+                'raw_events'::regclass,
+                COALESCE(
+                    (SELECT oid FROM pg_class
+                     WHERE relname = 'raw_events_legacy'
+                       AND relkind = 'r'
+                       AND relnamespace = 'public'::regnamespace
+                     LIMIT 1),
+                    'raw_events'::regclass   -- fallback keeps the ANY valid
+                )
+              )
           AND i.indisunique
           AND a.attname = 'id'
-          AND array_length(i.indkey::int[], 1) = 1
     ) THEN
         RAISE EXCEPTION 'raw_events.id must have a unique index';
     END IF;
 
-    -- 6. sent_notifications.event_id must reference raw_events.
+    -- 6. sent_notifications.event_id must reference raw_events (before migration
+    --    012) or raw_events_legacy (after migration 012 re-points the FK).
     IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conrelid = 'sent_notifications'::regclass
-          AND contype = 'f'
-          AND confrelid = 'raw_events'::regclass
+        SELECT 1 FROM pg_constraint c
+        JOIN pg_class ref ON ref.oid = c.confrelid
+        WHERE c.conrelid = 'sent_notifications'::regclass
+          AND c.contype  = 'f'
+          AND ref.relname IN ('raw_events', 'raw_events_legacy')
     ) THEN
         RAISE EXCEPTION 'sent_notifications is missing its foreign key to raw_events';
     END IF;

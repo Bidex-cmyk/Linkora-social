@@ -12,6 +12,10 @@
 services:
   migrations-postgres:
     image: postgres:16-alpine
+    # Pin to amd64 so the image resolves consistently on both x86-64 CI runners
+    # and Apple-Silicon developer machines.  The amd64 image runs under Rosetta /
+    # QEMU on arm64 hosts with negligible overhead for a throwaway test database.
+    platform: linux/amd64
     container_name: linkora-migrations-postgres
     environment:
       POSTGRES_USER: linkora

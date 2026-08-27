@@ -1,7 +1,7 @@
 # Indexer database migrations
 
 SQL migrations for the indexer's PostgreSQL schema. Files apply in filename
-order (`001_…` → `011_…`). They are validated on every PR by the
+order (`001_…` → `013_…`). They are validated on every PR by the
 [Migration Tests](../../../.github/workflows/migrations.yml) workflow — see
 [Running the tests](#running-the-tests).
 
@@ -52,6 +52,113 @@ step. The two must stay consistent. Notably, `indexer_state` is the
 per-stream ingestion cursor lives in `indexer_cursor`. (An earlier revision of
 `006_raw_events.sql` also defined `indexer_state` as a cursor table, colliding
 with the state-root definition — that stale block has been removed.)
+
+---
+
+## raw_events migration path (012_raw_events_partitioned.sql)
+
+`012_raw_events_partitioned.sql` converts the monolithic `raw_events` table
+created by `006_raw_events.sql` into a range-partitioned table. This section
+explains the migration path and what operators need to do for **existing
+deployments**.
+
+### What the migration does
+
+1. **Detects** whether `raw_events` is already partitioned (idempotent — skips
+   entirely if it is).
+2. **Renames** the monolithic table to `raw_events_legacy`.
+3. **Creates** a new `PARTITION BY RANGE (ledger_sequence)` parent with:
+   - the same columns and `PRIMARY KEY (ledger_sequence, event_index)`,
+   - a `UNIQUE` index on `id` (preserves the FK from `sent_notifications`),
+   - a **partial index** `idx_raw_events_unprocessed` on
+     `(ledger_sequence, event_index) WHERE processed_at IS NULL`, eliminating
+     full-table scans on crash-recovery queries,
+   - a default catch-all partition.
+4. **Seeds** 10 initial 1 000 000-ledger buckets (ledger 0 – 10 000 000).
+5. **Migrates** all rows from `raw_events_legacy` into the partitioned parent
+   using `INSERT … ON CONFLICT DO NOTHING` so re-application is safe.
+6. **Advances** the `id` sequence so new inserts do not collide with legacy IDs.
+
+### Steps for existing deployments
+
+```
+# 1. Take a database backup before running the migration.
+pg_dump $DATABASE_URL -Fc -f raw_events_pre_012_backup.dump
+
+# 2. Apply the migration.  The harness applies all migrations in order, but
+#    you can also run it by itself:
+psql $DATABASE_URL -f services/indexer/migrations/012_raw_events_partitioned.sql
+
+# 3. Verify the migration succeeded.
+psql $DATABASE_URL -c "
+  SELECT relkind, relname
+  FROM   pg_class
+  WHERE  relname IN ('raw_events','raw_events_legacy')
+    AND  relnamespace = 'public'::regnamespace;
+"
+-- Expected output:
+--  relkind |       relname
+-- ---------+----------------------
+--  p       | raw_events           ← partitioned parent
+--  r       | raw_events_legacy    ← original table (kept for safety)
+
+# 4. Confirm row counts match.
+psql $DATABASE_URL -c "
+  SELECT
+    (SELECT COUNT(*) FROM raw_events_legacy) AS legacy_count,
+    (SELECT COUNT(*) FROM raw_events)        AS new_count;
+"
+
+# 5. Verify the partial index is in use for crash-recovery queries.
+psql $DATABASE_URL -c "
+  EXPLAIN (ANALYZE, BUFFERS)
+  SELECT ledger_sequence, event_index
+  FROM   raw_events
+  WHERE  processed_at IS NULL
+  LIMIT  1000;
+"
+-- Look for: 'Index Scan using idx_raw_events_unprocessed …'
+
+# 6. Start the indexer normally.  The retention manager will start
+#    proactively creating future partition buckets.
+
+# 7. Once you are satisfied with indexer health, drop the legacy table
+#    (the migration intentionally leaves it for the operator to decide):
+psql $DATABASE_URL -c "DROP TABLE IF EXISTS raw_events_legacy;"
+```
+
+### Partition naming convention
+
+```
+raw_events_p<lo>_<hi>
+```
+
+Each bucket spans `<hi> - <lo>` ledgers. The default value is 1 000 000. At
+Stellar mainnet cadence (~1 ledger/5 s) that is ≈ 5.8 M seconds ≈ **67 days
+per partition**.
+
+### Retention / partition-drop job
+
+The `RawEventsRetentionManager` (`src/retention.ts`) runs on a configurable
+`node-cron` schedule (default: every hour at minute 5). On each tick it:
+
+1. Creates the next partition bucket (one bucket ahead of the current cursor),
+   so new writes never fall into the default partition.
+2. Drops any partition whose **entire ledger range** is older than
+   `RAW_EVENTS_RETENTION_LEDGERS` **and** whose every row has been processed
+   (`processed_at IS NOT NULL`). Partitions with unprocessed rows are logged
+   as warnings and skipped.
+
+Relevant environment variables (all optional):
+
+| Variable                       | Default     | Description                                        |
+| ------------------------------ | ----------- | -------------------------------------------------- |
+| `RAW_EVENTS_RETENTION_LEDGERS` | `4000000`   | Ledgers to keep (≈ 231 days at mainnet cadence).   |
+| `RAW_EVENTS_PARTITION_SIZE`    | `1000000`   | Ledger range per bucket. Must match migration 012. |
+| `RAW_EVENTS_ARCHIVE_ONLY`      | `false`     | Set `true` to detach but not drop old partitions.  |
+| `RAW_EVENTS_RETENTION_CRON`    | `5 * * * *` | cron schedule for the retention job.               |
+
+---
 
 ## Running the tests
 

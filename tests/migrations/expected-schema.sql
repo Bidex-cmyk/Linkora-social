@@ -22,6 +22,34 @@ CREATE FUNCTION public.remove_pool_admin(p_pool_id text, p_admin text, p_ledger 
            updated_ledger = p_ledger
     WHERE  pool_id = p_pool_id;
 $$;
+CREATE FUNCTION public.sync_follow_counts() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF (TG_OP = 'INSERT') THEN
+        -- Increment follower's following_count
+        INSERT INTO follow_counts (user_address, following_count) 
+        VALUES (NEW.follower, 1)
+        ON CONFLICT (user_address) DO UPDATE SET following_count = follow_counts.following_count + 1;
+        
+        -- Increment followee's followers_count
+        INSERT INTO follow_counts (user_address, followers_count) 
+        VALUES (NEW.followee, 1)
+        ON CONFLICT (user_address) DO UPDATE SET followers_count = follow_counts.followers_count + 1;
+        
+        RETURN NEW;
+    ELSIF (TG_OP = 'DELETE') THEN
+        -- Decrement follower's following_count
+        UPDATE follow_counts SET following_count = following_count - 1 WHERE user_address = OLD.follower;
+        
+        -- Decrement followee's followers_count
+        UPDATE follow_counts SET followers_count = followers_count - 1 WHERE user_address = OLD.followee;
+        
+        RETURN OLD;
+    END IF;
+    RETURN NULL;
+END;
+$$;
 CREATE FUNCTION public.update_reports_updated_at() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -55,6 +83,11 @@ CREATE TABLE public.dm_keys (
     address text NOT NULL,
     x25519_pubkey text NOT NULL,
     updated_at timestamp without time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE public.follow_counts (
+    user_address text NOT NULL,
+    followers_count integer DEFAULT 0 NOT NULL,
+    following_count integer DEFAULT 0 NOT NULL
 );
 CREATE TABLE public.follows (
     follower text NOT NULL,
@@ -142,7 +175,7 @@ CREATE MATERIALIZED VIEW public.post_scores AS
     tip_total,
     like_count,
     created_at,
-    ((((100 + (like_count * 5)) + (tip_total * 1)))::numeric - (EXTRACT(epoch FROM (now() - (created_at)::timestamp with time zone)) / (3600)::numeric)) AS score,
+    (((((100 + (like_count * 5)))::numeric + ((tip_total)::numeric / (1000000)::numeric)) - (EXTRACT(epoch FROM (now() - (created_at)::timestamp with time zone)) / (3600)::numeric)))::integer AS score,
     now() AS last_updated
    FROM public.posts p
   WHERE (deleted_at IS NULL)
@@ -161,6 +194,32 @@ CREATE TABLE public.raw_events (
     topic text[] NOT NULL,
     data jsonb NOT NULL,
     processed_at timestamp with time zone
+)
+PARTITION BY RANGE (ledger_sequence);
+CREATE SEQUENCE public.raw_events_id_seq1
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.raw_events_id_seq1 OWNED BY public.raw_events.id;
+CREATE TABLE public.raw_events_default (
+    id bigint DEFAULT nextval('public.raw_events_id_seq1'::regclass) NOT NULL,
+    ledger_sequence bigint NOT NULL,
+    event_index integer NOT NULL,
+    contract_id text NOT NULL,
+    topic text[] NOT NULL,
+    data jsonb NOT NULL,
+    processed_at timestamp with time zone
+);
+CREATE TABLE public.raw_events_legacy (
+    id bigint NOT NULL,
+    ledger_sequence bigint NOT NULL,
+    event_index integer NOT NULL,
+    contract_id text NOT NULL,
+    topic text[] NOT NULL,
+    data jsonb NOT NULL,
+    processed_at timestamp with time zone
 );
 CREATE SEQUENCE public.raw_events_id_seq
     START WITH 1
@@ -168,7 +227,97 @@ CREATE SEQUENCE public.raw_events_id_seq
     NO MINVALUE
     NO MAXVALUE
     CACHE 1;
-ALTER SEQUENCE public.raw_events_id_seq OWNED BY public.raw_events.id;
+ALTER SEQUENCE public.raw_events_id_seq OWNED BY public.raw_events_legacy.id;
+CREATE TABLE public.raw_events_p0_1000000 (
+    id bigint DEFAULT nextval('public.raw_events_id_seq1'::regclass) NOT NULL,
+    ledger_sequence bigint NOT NULL,
+    event_index integer NOT NULL,
+    contract_id text NOT NULL,
+    topic text[] NOT NULL,
+    data jsonb NOT NULL,
+    processed_at timestamp with time zone
+);
+CREATE TABLE public.raw_events_p1000000_2000000 (
+    id bigint DEFAULT nextval('public.raw_events_id_seq1'::regclass) NOT NULL,
+    ledger_sequence bigint NOT NULL,
+    event_index integer NOT NULL,
+    contract_id text NOT NULL,
+    topic text[] NOT NULL,
+    data jsonb NOT NULL,
+    processed_at timestamp with time zone
+);
+CREATE TABLE public.raw_events_p2000000_3000000 (
+    id bigint DEFAULT nextval('public.raw_events_id_seq1'::regclass) NOT NULL,
+    ledger_sequence bigint NOT NULL,
+    event_index integer NOT NULL,
+    contract_id text NOT NULL,
+    topic text[] NOT NULL,
+    data jsonb NOT NULL,
+    processed_at timestamp with time zone
+);
+CREATE TABLE public.raw_events_p3000000_4000000 (
+    id bigint DEFAULT nextval('public.raw_events_id_seq1'::regclass) NOT NULL,
+    ledger_sequence bigint NOT NULL,
+    event_index integer NOT NULL,
+    contract_id text NOT NULL,
+    topic text[] NOT NULL,
+    data jsonb NOT NULL,
+    processed_at timestamp with time zone
+);
+CREATE TABLE public.raw_events_p4000000_5000000 (
+    id bigint DEFAULT nextval('public.raw_events_id_seq1'::regclass) NOT NULL,
+    ledger_sequence bigint NOT NULL,
+    event_index integer NOT NULL,
+    contract_id text NOT NULL,
+    topic text[] NOT NULL,
+    data jsonb NOT NULL,
+    processed_at timestamp with time zone
+);
+CREATE TABLE public.raw_events_p5000000_6000000 (
+    id bigint DEFAULT nextval('public.raw_events_id_seq1'::regclass) NOT NULL,
+    ledger_sequence bigint NOT NULL,
+    event_index integer NOT NULL,
+    contract_id text NOT NULL,
+    topic text[] NOT NULL,
+    data jsonb NOT NULL,
+    processed_at timestamp with time zone
+);
+CREATE TABLE public.raw_events_p6000000_7000000 (
+    id bigint DEFAULT nextval('public.raw_events_id_seq1'::regclass) NOT NULL,
+    ledger_sequence bigint NOT NULL,
+    event_index integer NOT NULL,
+    contract_id text NOT NULL,
+    topic text[] NOT NULL,
+    data jsonb NOT NULL,
+    processed_at timestamp with time zone
+);
+CREATE TABLE public.raw_events_p7000000_8000000 (
+    id bigint DEFAULT nextval('public.raw_events_id_seq1'::regclass) NOT NULL,
+    ledger_sequence bigint NOT NULL,
+    event_index integer NOT NULL,
+    contract_id text NOT NULL,
+    topic text[] NOT NULL,
+    data jsonb NOT NULL,
+    processed_at timestamp with time zone
+);
+CREATE TABLE public.raw_events_p8000000_9000000 (
+    id bigint DEFAULT nextval('public.raw_events_id_seq1'::regclass) NOT NULL,
+    ledger_sequence bigint NOT NULL,
+    event_index integer NOT NULL,
+    contract_id text NOT NULL,
+    topic text[] NOT NULL,
+    data jsonb NOT NULL,
+    processed_at timestamp with time zone
+);
+CREATE TABLE public.raw_events_p9000000_10000000 (
+    id bigint DEFAULT nextval('public.raw_events_id_seq1'::regclass) NOT NULL,
+    ledger_sequence bigint NOT NULL,
+    event_index integer NOT NULL,
+    contract_id text NOT NULL,
+    topic text[] NOT NULL,
+    data jsonb NOT NULL,
+    processed_at timestamp with time zone
+);
 CREATE TABLE public.reports (
     id integer NOT NULL,
     post_id bigint NOT NULL,
@@ -221,9 +370,21 @@ CREATE SEQUENCE public.tips_id_seq
     NO MAXVALUE
     CACHE 1;
 ALTER SEQUENCE public.tips_id_seq OWNED BY public.tips.id;
+ALTER TABLE ONLY public.raw_events ATTACH PARTITION public.raw_events_default DEFAULT;
+ALTER TABLE ONLY public.raw_events ATTACH PARTITION public.raw_events_p0_1000000 FOR VALUES FROM ('0') TO ('1000000');
+ALTER TABLE ONLY public.raw_events ATTACH PARTITION public.raw_events_p1000000_2000000 FOR VALUES FROM ('1000000') TO ('2000000');
+ALTER TABLE ONLY public.raw_events ATTACH PARTITION public.raw_events_p2000000_3000000 FOR VALUES FROM ('2000000') TO ('3000000');
+ALTER TABLE ONLY public.raw_events ATTACH PARTITION public.raw_events_p3000000_4000000 FOR VALUES FROM ('3000000') TO ('4000000');
+ALTER TABLE ONLY public.raw_events ATTACH PARTITION public.raw_events_p4000000_5000000 FOR VALUES FROM ('4000000') TO ('5000000');
+ALTER TABLE ONLY public.raw_events ATTACH PARTITION public.raw_events_p5000000_6000000 FOR VALUES FROM ('5000000') TO ('6000000');
+ALTER TABLE ONLY public.raw_events ATTACH PARTITION public.raw_events_p6000000_7000000 FOR VALUES FROM ('6000000') TO ('7000000');
+ALTER TABLE ONLY public.raw_events ATTACH PARTITION public.raw_events_p7000000_8000000 FOR VALUES FROM ('7000000') TO ('8000000');
+ALTER TABLE ONLY public.raw_events ATTACH PARTITION public.raw_events_p8000000_9000000 FOR VALUES FROM ('8000000') TO ('9000000');
+ALTER TABLE ONLY public.raw_events ATTACH PARTITION public.raw_events_p9000000_10000000 FOR VALUES FROM ('9000000') TO ('10000000');
 ALTER TABLE ONLY public.device_tokens ALTER COLUMN id SET DEFAULT nextval('public.device_tokens_id_seq'::regclass);
 ALTER TABLE ONLY public.likes ALTER COLUMN id SET DEFAULT nextval('public.likes_id_seq'::regclass);
-ALTER TABLE ONLY public.raw_events ALTER COLUMN id SET DEFAULT nextval('public.raw_events_id_seq'::regclass);
+ALTER TABLE ONLY public.raw_events ALTER COLUMN id SET DEFAULT nextval('public.raw_events_id_seq1'::regclass);
+ALTER TABLE ONLY public.raw_events_legacy ALTER COLUMN id SET DEFAULT nextval('public.raw_events_id_seq'::regclass);
 ALTER TABLE ONLY public.reports ALTER COLUMN id SET DEFAULT nextval('public.reports_id_seq'::regclass);
 ALTER TABLE ONLY public.sent_notifications ALTER COLUMN id SET DEFAULT nextval('public.sent_notifications_id_seq'::regclass);
 ALTER TABLE ONLY public.tips ALTER COLUMN id SET DEFAULT nextval('public.tips_id_seq'::regclass);
@@ -235,6 +396,8 @@ ALTER TABLE ONLY public.device_tokens
     ADD CONSTRAINT device_tokens_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.dm_keys
     ADD CONSTRAINT dm_keys_pkey PRIMARY KEY (address);
+ALTER TABLE ONLY public.follow_counts
+    ADD CONSTRAINT follow_counts_pkey PRIMARY KEY (user_address);
 ALTER TABLE ONLY public.follows
     ADD CONSTRAINT follows_pkey PRIMARY KEY (follower, followee);
 ALTER TABLE ONLY public.governance_proposals
@@ -260,6 +423,30 @@ ALTER TABLE ONLY public.posts
 ALTER TABLE ONLY public.profiles
     ADD CONSTRAINT profiles_pkey PRIMARY KEY (address);
 ALTER TABLE ONLY public.raw_events
+    ADD CONSTRAINT raw_events_pkey1 PRIMARY KEY (ledger_sequence, event_index);
+ALTER TABLE ONLY public.raw_events_default
+    ADD CONSTRAINT raw_events_default_pkey PRIMARY KEY (ledger_sequence, event_index);
+ALTER TABLE ONLY public.raw_events_p0_1000000
+    ADD CONSTRAINT raw_events_p0_1000000_pkey PRIMARY KEY (ledger_sequence, event_index);
+ALTER TABLE ONLY public.raw_events_p1000000_2000000
+    ADD CONSTRAINT raw_events_p1000000_2000000_pkey PRIMARY KEY (ledger_sequence, event_index);
+ALTER TABLE ONLY public.raw_events_p2000000_3000000
+    ADD CONSTRAINT raw_events_p2000000_3000000_pkey PRIMARY KEY (ledger_sequence, event_index);
+ALTER TABLE ONLY public.raw_events_p3000000_4000000
+    ADD CONSTRAINT raw_events_p3000000_4000000_pkey PRIMARY KEY (ledger_sequence, event_index);
+ALTER TABLE ONLY public.raw_events_p4000000_5000000
+    ADD CONSTRAINT raw_events_p4000000_5000000_pkey PRIMARY KEY (ledger_sequence, event_index);
+ALTER TABLE ONLY public.raw_events_p5000000_6000000
+    ADD CONSTRAINT raw_events_p5000000_6000000_pkey PRIMARY KEY (ledger_sequence, event_index);
+ALTER TABLE ONLY public.raw_events_p6000000_7000000
+    ADD CONSTRAINT raw_events_p6000000_7000000_pkey PRIMARY KEY (ledger_sequence, event_index);
+ALTER TABLE ONLY public.raw_events_p7000000_8000000
+    ADD CONSTRAINT raw_events_p7000000_8000000_pkey PRIMARY KEY (ledger_sequence, event_index);
+ALTER TABLE ONLY public.raw_events_p8000000_9000000
+    ADD CONSTRAINT raw_events_p8000000_9000000_pkey PRIMARY KEY (ledger_sequence, event_index);
+ALTER TABLE ONLY public.raw_events_p9000000_10000000
+    ADD CONSTRAINT raw_events_p9000000_10000000_pkey PRIMARY KEY (ledger_sequence, event_index);
+ALTER TABLE ONLY public.raw_events_legacy
     ADD CONSTRAINT raw_events_pkey PRIMARY KEY (ledger_sequence, event_index);
 ALTER TABLE ONLY public.reports
     ADD CONSTRAINT reports_pkey PRIMARY KEY (id);
@@ -292,9 +479,13 @@ CREATE INDEX idx_posts_content_fts ON public.posts USING gin (content_tsv);
 CREATE INDEX idx_posts_created_at ON public.posts USING btree (created_at DESC);
 CREATE INDEX idx_posts_deleted_at ON public.posts USING btree (deleted_at);
 CREATE INDEX idx_profiles_username ON public.profiles USING btree (username);
-CREATE INDEX idx_raw_events_contract_id ON public.raw_events USING btree (contract_id);
-CREATE UNIQUE INDEX idx_raw_events_id ON public.raw_events USING btree (id);
-CREATE INDEX idx_raw_events_ledger ON public.raw_events USING btree (ledger_sequence);
+CREATE INDEX idx_raw_events_contract_id ON public.raw_events_legacy USING btree (contract_id);
+CREATE INDEX idx_raw_events_contract_id1 ON ONLY public.raw_events USING btree (contract_id);
+CREATE UNIQUE INDEX idx_raw_events_id ON public.raw_events_legacy USING btree (id);
+CREATE UNIQUE INDEX idx_raw_events_id1 ON ONLY public.raw_events USING btree (id, ledger_sequence);
+CREATE INDEX idx_raw_events_ledger ON public.raw_events_legacy USING btree (ledger_sequence);
+CREATE INDEX idx_raw_events_ledger1 ON ONLY public.raw_events USING btree (ledger_sequence);
+CREATE INDEX idx_raw_events_unprocessed ON ONLY public.raw_events USING btree (ledger_sequence, event_index) WHERE (processed_at IS NULL);
 CREATE INDEX idx_reports_created_at ON public.reports USING btree (created_at DESC);
 CREATE INDEX idx_reports_post_id ON public.reports USING btree (post_id);
 CREATE INDEX idx_reports_reporter ON public.reports USING btree (reporter_address);
@@ -303,12 +494,112 @@ CREATE INDEX idx_sent_notifications_recipient ON public.sent_notifications USING
 CREATE INDEX idx_tips_created_at ON public.tips USING btree (created_at DESC);
 CREATE INDEX idx_tips_post_id ON public.tips USING btree (post_id);
 CREATE INDEX idx_tips_tipper ON public.tips USING btree (tipper);
+CREATE INDEX raw_events_default_contract_id_idx ON public.raw_events_default USING btree (contract_id);
+CREATE UNIQUE INDEX raw_events_default_id_ledger_sequence_idx ON public.raw_events_default USING btree (id, ledger_sequence);
+CREATE INDEX raw_events_default_ledger_sequence_event_index_idx ON public.raw_events_default USING btree (ledger_sequence, event_index) WHERE (processed_at IS NULL);
+CREATE INDEX raw_events_default_ledger_sequence_idx ON public.raw_events_default USING btree (ledger_sequence);
+CREATE INDEX raw_events_p0_1000000_contract_id_idx ON public.raw_events_p0_1000000 USING btree (contract_id);
+CREATE UNIQUE INDEX raw_events_p0_1000000_id_ledger_sequence_idx ON public.raw_events_p0_1000000 USING btree (id, ledger_sequence);
+CREATE INDEX raw_events_p0_1000000_ledger_sequence_event_index_idx ON public.raw_events_p0_1000000 USING btree (ledger_sequence, event_index) WHERE (processed_at IS NULL);
+CREATE INDEX raw_events_p0_1000000_ledger_sequence_idx ON public.raw_events_p0_1000000 USING btree (ledger_sequence);
+CREATE INDEX raw_events_p1000000_2000000_contract_id_idx ON public.raw_events_p1000000_2000000 USING btree (contract_id);
+CREATE UNIQUE INDEX raw_events_p1000000_2000000_id_ledger_sequence_idx ON public.raw_events_p1000000_2000000 USING btree (id, ledger_sequence);
+CREATE INDEX raw_events_p1000000_2000000_ledger_sequence_event_index_idx ON public.raw_events_p1000000_2000000 USING btree (ledger_sequence, event_index) WHERE (processed_at IS NULL);
+CREATE INDEX raw_events_p1000000_2000000_ledger_sequence_idx ON public.raw_events_p1000000_2000000 USING btree (ledger_sequence);
+CREATE INDEX raw_events_p2000000_3000000_contract_id_idx ON public.raw_events_p2000000_3000000 USING btree (contract_id);
+CREATE UNIQUE INDEX raw_events_p2000000_3000000_id_ledger_sequence_idx ON public.raw_events_p2000000_3000000 USING btree (id, ledger_sequence);
+CREATE INDEX raw_events_p2000000_3000000_ledger_sequence_event_index_idx ON public.raw_events_p2000000_3000000 USING btree (ledger_sequence, event_index) WHERE (processed_at IS NULL);
+CREATE INDEX raw_events_p2000000_3000000_ledger_sequence_idx ON public.raw_events_p2000000_3000000 USING btree (ledger_sequence);
+CREATE INDEX raw_events_p3000000_4000000_contract_id_idx ON public.raw_events_p3000000_4000000 USING btree (contract_id);
+CREATE UNIQUE INDEX raw_events_p3000000_4000000_id_ledger_sequence_idx ON public.raw_events_p3000000_4000000 USING btree (id, ledger_sequence);
+CREATE INDEX raw_events_p3000000_4000000_ledger_sequence_event_index_idx ON public.raw_events_p3000000_4000000 USING btree (ledger_sequence, event_index) WHERE (processed_at IS NULL);
+CREATE INDEX raw_events_p3000000_4000000_ledger_sequence_idx ON public.raw_events_p3000000_4000000 USING btree (ledger_sequence);
+CREATE INDEX raw_events_p4000000_5000000_contract_id_idx ON public.raw_events_p4000000_5000000 USING btree (contract_id);
+CREATE UNIQUE INDEX raw_events_p4000000_5000000_id_ledger_sequence_idx ON public.raw_events_p4000000_5000000 USING btree (id, ledger_sequence);
+CREATE INDEX raw_events_p4000000_5000000_ledger_sequence_event_index_idx ON public.raw_events_p4000000_5000000 USING btree (ledger_sequence, event_index) WHERE (processed_at IS NULL);
+CREATE INDEX raw_events_p4000000_5000000_ledger_sequence_idx ON public.raw_events_p4000000_5000000 USING btree (ledger_sequence);
+CREATE INDEX raw_events_p5000000_6000000_contract_id_idx ON public.raw_events_p5000000_6000000 USING btree (contract_id);
+CREATE UNIQUE INDEX raw_events_p5000000_6000000_id_ledger_sequence_idx ON public.raw_events_p5000000_6000000 USING btree (id, ledger_sequence);
+CREATE INDEX raw_events_p5000000_6000000_ledger_sequence_event_index_idx ON public.raw_events_p5000000_6000000 USING btree (ledger_sequence, event_index) WHERE (processed_at IS NULL);
+CREATE INDEX raw_events_p5000000_6000000_ledger_sequence_idx ON public.raw_events_p5000000_6000000 USING btree (ledger_sequence);
+CREATE INDEX raw_events_p6000000_7000000_contract_id_idx ON public.raw_events_p6000000_7000000 USING btree (contract_id);
+CREATE UNIQUE INDEX raw_events_p6000000_7000000_id_ledger_sequence_idx ON public.raw_events_p6000000_7000000 USING btree (id, ledger_sequence);
+CREATE INDEX raw_events_p6000000_7000000_ledger_sequence_event_index_idx ON public.raw_events_p6000000_7000000 USING btree (ledger_sequence, event_index) WHERE (processed_at IS NULL);
+CREATE INDEX raw_events_p6000000_7000000_ledger_sequence_idx ON public.raw_events_p6000000_7000000 USING btree (ledger_sequence);
+CREATE INDEX raw_events_p7000000_8000000_contract_id_idx ON public.raw_events_p7000000_8000000 USING btree (contract_id);
+CREATE UNIQUE INDEX raw_events_p7000000_8000000_id_ledger_sequence_idx ON public.raw_events_p7000000_8000000 USING btree (id, ledger_sequence);
+CREATE INDEX raw_events_p7000000_8000000_ledger_sequence_event_index_idx ON public.raw_events_p7000000_8000000 USING btree (ledger_sequence, event_index) WHERE (processed_at IS NULL);
+CREATE INDEX raw_events_p7000000_8000000_ledger_sequence_idx ON public.raw_events_p7000000_8000000 USING btree (ledger_sequence);
+CREATE INDEX raw_events_p8000000_9000000_contract_id_idx ON public.raw_events_p8000000_9000000 USING btree (contract_id);
+CREATE UNIQUE INDEX raw_events_p8000000_9000000_id_ledger_sequence_idx ON public.raw_events_p8000000_9000000 USING btree (id, ledger_sequence);
+CREATE INDEX raw_events_p8000000_9000000_ledger_sequence_event_index_idx ON public.raw_events_p8000000_9000000 USING btree (ledger_sequence, event_index) WHERE (processed_at IS NULL);
+CREATE INDEX raw_events_p8000000_9000000_ledger_sequence_idx ON public.raw_events_p8000000_9000000 USING btree (ledger_sequence);
+CREATE INDEX raw_events_p9000000_10000000_contract_id_idx ON public.raw_events_p9000000_10000000 USING btree (contract_id);
+CREATE UNIQUE INDEX raw_events_p9000000_10000000_id_ledger_sequence_idx ON public.raw_events_p9000000_10000000 USING btree (id, ledger_sequence);
+CREATE INDEX raw_events_p9000000_10000000_ledger_sequence_event_index_idx ON public.raw_events_p9000000_10000000 USING btree (ledger_sequence, event_index) WHERE (processed_at IS NULL);
+CREATE INDEX raw_events_p9000000_10000000_ledger_sequence_idx ON public.raw_events_p9000000_10000000 USING btree (ledger_sequence);
+ALTER INDEX public.idx_raw_events_contract_id1 ATTACH PARTITION public.raw_events_default_contract_id_idx;
+ALTER INDEX public.idx_raw_events_id1 ATTACH PARTITION public.raw_events_default_id_ledger_sequence_idx;
+ALTER INDEX public.idx_raw_events_unprocessed ATTACH PARTITION public.raw_events_default_ledger_sequence_event_index_idx;
+ALTER INDEX public.idx_raw_events_ledger1 ATTACH PARTITION public.raw_events_default_ledger_sequence_idx;
+ALTER INDEX public.raw_events_pkey1 ATTACH PARTITION public.raw_events_default_pkey;
+ALTER INDEX public.idx_raw_events_contract_id1 ATTACH PARTITION public.raw_events_p0_1000000_contract_id_idx;
+ALTER INDEX public.idx_raw_events_id1 ATTACH PARTITION public.raw_events_p0_1000000_id_ledger_sequence_idx;
+ALTER INDEX public.idx_raw_events_unprocessed ATTACH PARTITION public.raw_events_p0_1000000_ledger_sequence_event_index_idx;
+ALTER INDEX public.idx_raw_events_ledger1 ATTACH PARTITION public.raw_events_p0_1000000_ledger_sequence_idx;
+ALTER INDEX public.raw_events_pkey1 ATTACH PARTITION public.raw_events_p0_1000000_pkey;
+ALTER INDEX public.idx_raw_events_contract_id1 ATTACH PARTITION public.raw_events_p1000000_2000000_contract_id_idx;
+ALTER INDEX public.idx_raw_events_id1 ATTACH PARTITION public.raw_events_p1000000_2000000_id_ledger_sequence_idx;
+ALTER INDEX public.idx_raw_events_unprocessed ATTACH PARTITION public.raw_events_p1000000_2000000_ledger_sequence_event_index_idx;
+ALTER INDEX public.idx_raw_events_ledger1 ATTACH PARTITION public.raw_events_p1000000_2000000_ledger_sequence_idx;
+ALTER INDEX public.raw_events_pkey1 ATTACH PARTITION public.raw_events_p1000000_2000000_pkey;
+ALTER INDEX public.idx_raw_events_contract_id1 ATTACH PARTITION public.raw_events_p2000000_3000000_contract_id_idx;
+ALTER INDEX public.idx_raw_events_id1 ATTACH PARTITION public.raw_events_p2000000_3000000_id_ledger_sequence_idx;
+ALTER INDEX public.idx_raw_events_unprocessed ATTACH PARTITION public.raw_events_p2000000_3000000_ledger_sequence_event_index_idx;
+ALTER INDEX public.idx_raw_events_ledger1 ATTACH PARTITION public.raw_events_p2000000_3000000_ledger_sequence_idx;
+ALTER INDEX public.raw_events_pkey1 ATTACH PARTITION public.raw_events_p2000000_3000000_pkey;
+ALTER INDEX public.idx_raw_events_contract_id1 ATTACH PARTITION public.raw_events_p3000000_4000000_contract_id_idx;
+ALTER INDEX public.idx_raw_events_id1 ATTACH PARTITION public.raw_events_p3000000_4000000_id_ledger_sequence_idx;
+ALTER INDEX public.idx_raw_events_unprocessed ATTACH PARTITION public.raw_events_p3000000_4000000_ledger_sequence_event_index_idx;
+ALTER INDEX public.idx_raw_events_ledger1 ATTACH PARTITION public.raw_events_p3000000_4000000_ledger_sequence_idx;
+ALTER INDEX public.raw_events_pkey1 ATTACH PARTITION public.raw_events_p3000000_4000000_pkey;
+ALTER INDEX public.idx_raw_events_contract_id1 ATTACH PARTITION public.raw_events_p4000000_5000000_contract_id_idx;
+ALTER INDEX public.idx_raw_events_id1 ATTACH PARTITION public.raw_events_p4000000_5000000_id_ledger_sequence_idx;
+ALTER INDEX public.idx_raw_events_unprocessed ATTACH PARTITION public.raw_events_p4000000_5000000_ledger_sequence_event_index_idx;
+ALTER INDEX public.idx_raw_events_ledger1 ATTACH PARTITION public.raw_events_p4000000_5000000_ledger_sequence_idx;
+ALTER INDEX public.raw_events_pkey1 ATTACH PARTITION public.raw_events_p4000000_5000000_pkey;
+ALTER INDEX public.idx_raw_events_contract_id1 ATTACH PARTITION public.raw_events_p5000000_6000000_contract_id_idx;
+ALTER INDEX public.idx_raw_events_id1 ATTACH PARTITION public.raw_events_p5000000_6000000_id_ledger_sequence_idx;
+ALTER INDEX public.idx_raw_events_unprocessed ATTACH PARTITION public.raw_events_p5000000_6000000_ledger_sequence_event_index_idx;
+ALTER INDEX public.idx_raw_events_ledger1 ATTACH PARTITION public.raw_events_p5000000_6000000_ledger_sequence_idx;
+ALTER INDEX public.raw_events_pkey1 ATTACH PARTITION public.raw_events_p5000000_6000000_pkey;
+ALTER INDEX public.idx_raw_events_contract_id1 ATTACH PARTITION public.raw_events_p6000000_7000000_contract_id_idx;
+ALTER INDEX public.idx_raw_events_id1 ATTACH PARTITION public.raw_events_p6000000_7000000_id_ledger_sequence_idx;
+ALTER INDEX public.idx_raw_events_unprocessed ATTACH PARTITION public.raw_events_p6000000_7000000_ledger_sequence_event_index_idx;
+ALTER INDEX public.idx_raw_events_ledger1 ATTACH PARTITION public.raw_events_p6000000_7000000_ledger_sequence_idx;
+ALTER INDEX public.raw_events_pkey1 ATTACH PARTITION public.raw_events_p6000000_7000000_pkey;
+ALTER INDEX public.idx_raw_events_contract_id1 ATTACH PARTITION public.raw_events_p7000000_8000000_contract_id_idx;
+ALTER INDEX public.idx_raw_events_id1 ATTACH PARTITION public.raw_events_p7000000_8000000_id_ledger_sequence_idx;
+ALTER INDEX public.idx_raw_events_unprocessed ATTACH PARTITION public.raw_events_p7000000_8000000_ledger_sequence_event_index_idx;
+ALTER INDEX public.idx_raw_events_ledger1 ATTACH PARTITION public.raw_events_p7000000_8000000_ledger_sequence_idx;
+ALTER INDEX public.raw_events_pkey1 ATTACH PARTITION public.raw_events_p7000000_8000000_pkey;
+ALTER INDEX public.idx_raw_events_contract_id1 ATTACH PARTITION public.raw_events_p8000000_9000000_contract_id_idx;
+ALTER INDEX public.idx_raw_events_id1 ATTACH PARTITION public.raw_events_p8000000_9000000_id_ledger_sequence_idx;
+ALTER INDEX public.idx_raw_events_unprocessed ATTACH PARTITION public.raw_events_p8000000_9000000_ledger_sequence_event_index_idx;
+ALTER INDEX public.idx_raw_events_ledger1 ATTACH PARTITION public.raw_events_p8000000_9000000_ledger_sequence_idx;
+ALTER INDEX public.raw_events_pkey1 ATTACH PARTITION public.raw_events_p8000000_9000000_pkey;
+ALTER INDEX public.idx_raw_events_contract_id1 ATTACH PARTITION public.raw_events_p9000000_10000000_contract_id_idx;
+ALTER INDEX public.idx_raw_events_id1 ATTACH PARTITION public.raw_events_p9000000_10000000_id_ledger_sequence_idx;
+ALTER INDEX public.idx_raw_events_unprocessed ATTACH PARTITION public.raw_events_p9000000_10000000_ledger_sequence_event_index_idx;
+ALTER INDEX public.idx_raw_events_ledger1 ATTACH PARTITION public.raw_events_p9000000_10000000_ledger_sequence_idx;
+ALTER INDEX public.raw_events_pkey1 ATTACH PARTITION public.raw_events_p9000000_10000000_pkey;
 CREATE TRIGGER reports_updated_at_trigger BEFORE UPDATE ON public.reports FOR EACH ROW EXECUTE FUNCTION public.update_reports_updated_at();
+CREATE TRIGGER update_follow_counts_trigger AFTER INSERT OR DELETE ON public.follows FOR EACH ROW EXECUTE FUNCTION public.sync_follow_counts();
 ALTER TABLE ONLY public.likes
     ADD CONSTRAINT likes_post_id_fkey FOREIGN KEY (post_id) REFERENCES public.posts(id);
 ALTER TABLE ONLY public.reports
     ADD CONSTRAINT reports_post_id_fkey FOREIGN KEY (post_id) REFERENCES public.posts(id);
 ALTER TABLE ONLY public.sent_notifications
-    ADD CONSTRAINT sent_notifications_event_id_fkey FOREIGN KEY (event_id) REFERENCES public.raw_events(id) ON DELETE CASCADE;
+    ADD CONSTRAINT sent_notifications_event_id_fkey FOREIGN KEY (event_id) REFERENCES public.raw_events_legacy(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.tips
     ADD CONSTRAINT tips_post_id_fkey FOREIGN KEY (post_id) REFERENCES public.posts(id);

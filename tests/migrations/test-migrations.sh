@@ -289,12 +289,20 @@ psql_value "DROP DATABASE IF EXISTS ${CONC_DB};" >/dev/null
 psql_value "CREATE DATABASE ${CONC_DB} OWNER ${DB_USER};" >/dev/null
 
 apply_all_to() {
+    # Apply every migration to $1, logging all output to $2.
+    # We intentionally omit -v ON_ERROR_STOP=1 here: in a concurrent run a
+    # racer will sometimes lose a CREATE TABLE/TRIGGER/INDEX race and receive
+    # a benign "already exists" error from Postgres. That error must not abort
+    # the runner — the loser should continue so that every subsequent migration
+    # (each individually idempotent) still executes. The schema-consistency
+    # check that follows this step is the authoritative correctness gate.
     local dbname="$1" logfile="$2"
     : > "$logfile"
     for m in "${MIGRATIONS[@]}"; do
-        psql_file_db "$dbname" "$m" >>"$logfile" 2>&1 || return 1
+        "${COMPOSE[@]}" exec -T "$SERVICE" \
+            psql "${PGHOST_ARG[@]}" -q -U "$DB_USER" -d "$dbname" \
+            >>"$logfile" 2>&1 < "$m"
     done
-    return 0
 }
 
 apply_all_to "$CONC_DB" conc_a.log & PID_A=$!

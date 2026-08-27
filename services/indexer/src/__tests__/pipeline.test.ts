@@ -88,7 +88,7 @@ class FakeClient implements PgClientLike {
       return { rowCount: 1, rows: [] };
     }
 
-    if (sql.startsWith("UPDATE raw_events SET processed_at")) {
+    if (sql.startsWith("UPDATE raw_events") && sql.includes("SET processed_at")) {
       return { rowCount: 1, rows: [] };
     }
 

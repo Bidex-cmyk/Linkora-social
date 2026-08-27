@@ -23,7 +23,30 @@ CREATE TABLE IF NOT EXISTS raw_events (
 -- `id` is a surrogate key used by downstream tables (e.g. sent_notifications
 -- references raw_events(id)). A UNIQUE index both serves point lookups and
 -- provides the unique constraint a foreign key requires.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_events_id ON raw_events (id);
+-- Guard: only create the single-column unique index when raw_events is a plain
+-- heap table. After migration 012 converts it to a partitioned table the index
+-- must include the partition key; migration 012 creates idx_raw_events_id1 for
+-- that purpose.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relname = 'raw_events'
+      AND c.relkind = 'r'          -- plain heap table only
+      AND n.nspname = 'public'
+  ) THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_indexes
+      WHERE schemaname = 'public'
+        AND tablename  = 'raw_events'
+        AND indexname  = 'idx_raw_events_id'
+    ) THEN
+      EXECUTE 'CREATE UNIQUE INDEX idx_raw_events_id ON raw_events (id)';
+    END IF;
+  END IF;
+END
+$$;
 CREATE INDEX IF NOT EXISTS idx_raw_events_contract_id ON raw_events (contract_id);
 CREATE INDEX IF NOT EXISTS idx_raw_events_ledger      ON raw_events (ledger_sequence);
 
