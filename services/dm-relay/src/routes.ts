@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import { WebSocket } from "ws";
 import { Database, DbMessage } from "./database";
 import { AuthService } from "./auth";
+import { messageAuthMiddleware, addressOwnershipMiddleware } from "./middleware/auth";
 import { validateBody, validateQuery, validateParams } from "./middleware/validate";
 import {
   SendMessageSchema,
@@ -164,14 +165,21 @@ function handleRouteError(error: unknown, requestId: string): { status: number; 
   };
 }
 
-export function createRouter(database: Database, _authService: AuthService): Router {
+export function createRouter(database: Database, authService: AuthService): Router {
   const router = Router();
+  const messageAuth = messageAuthMiddleware(authService);
+  const addressAuth = addressOwnershipMiddleware(authService);
 
   /**
    * POST /messages - Submit an encrypted message
+   *
+   * Auth is applied here, scoped to this route, rather than via a global
+   * path-matching middleware — so it can never over-apply to unrelated
+   * routes (health checks, future public endpoints, etc).
    */
   router.post(
     "/messages",
+    messageAuth,
     idempotencyMiddleware(database),
     validateBody(SendMessageSchema),
     async (req: Request, res: Response) => {
@@ -213,8 +221,16 @@ export function createRouter(database: Database, _authService: AuthService): Rou
     }
   );
 
+  /**
+   * GET /messages/:address - Fetch messages for the authenticated address.
+   *
+   * Verifies the caller owns `:address` via a signed Authorization header.
+   * Applied here, scoped to this route, instead of via a global path-matching
+   * middleware.
+   */
   router.get(
     "/messages/:address",
+    addressAuth,
     validateParams(AddressParamSchema),
     validateQuery(GetMessagesQuerySchema),
     async (req: Request, res: Response) => {

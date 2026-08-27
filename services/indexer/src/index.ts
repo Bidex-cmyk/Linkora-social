@@ -28,6 +28,7 @@ import { attachNotificationDispatcher } from "./notifications/events";
 import { NotificationService, PostgresDeviceTokenStore } from "./notifications/service";
 import { createApp } from "./api";
 import { createDomainProcessor } from "./domain-processor";
+import { saveStateRoot } from "./stateRoot";
 import { PostgresDatabase } from "./postgres-db";
 import { ScoreRefreshService } from "./score-refresh";
 import { HealthMonitor } from "./services/health-monitor";
@@ -365,6 +366,13 @@ async function main(): Promise<void> {
       notificationService,
       new PostgresDatabase(pgPool)
     ),
+    // Publish the state root only after this batch's transaction has
+    // committed, so the stored root always reflects a fully-applied ledger
+    // rather than a partially-applied one.
+    onCommit: (cursor) =>
+      saveStateRoot(pgPool, cursor).catch((err) =>
+        logger.warn({ err, ledgerSequence: cursor }, "Failed to publish state root after commit")
+      ),
   });
 
   const processBatch: BatchProcessor = async (events) => {
