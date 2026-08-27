@@ -35,8 +35,8 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Trigger (guarded so re-applying this migration is idempotent)
-DROP TRIGGER IF EXISTS update_follow_counts_trigger ON follows;
-CREATE TRIGGER update_follow_counts_trigger
+-- Trigger (CREATE OR REPLACE is atomic and concurrency-safe; PG 14+ required,
+-- which is satisfied by our postgres:16 baseline).
+CREATE OR REPLACE TRIGGER update_follow_counts_trigger
 AFTER INSERT OR DELETE ON follows
 FOR EACH ROW EXECUTE FUNCTION sync_follow_counts();
