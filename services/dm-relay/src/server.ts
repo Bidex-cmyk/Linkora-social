@@ -32,6 +32,9 @@ import {
 } from "./middleware/rateLimit";
 import { createHealthRouter } from "./routes/health";
 import { logger } from "./logger";
+import { InflightCounter } from "./inflight-counter";
+
+export { InflightCounter };
 
 // Load environment variables
 dotenv.config();
@@ -45,6 +48,18 @@ const config = loadConfig();
 let started = false;
 let startedAt: string | null = null;
 let shuttingDown = false;
+
+/**
+ * How long (ms) to wait for in-flight WebSocket DB writes to finish before
+ * forcing a pool close.  Defaults to 30 000 ms; override with the
+ * SHUTDOWN_DRAIN_TIMEOUT_MS environment variable.
+ */
+const SHUTDOWN_DRAIN_TIMEOUT_MS = (() => {
+  const raw = process.env.SHUTDOWN_DRAIN_TIMEOUT_MS;
+  if (!raw) return 30_000;
+  const parsed = parseInt(raw, 10);
+  return isNaN(parsed) ? 30_000 : parsed;
+})();
 
 async function createApp() {
   const app = express();
@@ -141,6 +156,11 @@ async function createApp() {
   const httpServer = http.createServer(app);
   const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 
+  // Counter for DB writes that are currently executing on behalf of a
+  // WebSocket connection.  The shutdown handler drains this before closing
+  // the pool so no write is abandoned mid-flight.
+  const inflightCounter = new InflightCounter();
+
   const MAX_WS_CONNECTIONS_PER_ADDRESS = 5;
   const wsConnectionCounts = new Map<string, number>();
 
@@ -206,7 +226,7 @@ async function createApp() {
     }
 
     wsConnectionCounts.set(address, currentCount + 1);
-    registerWsClient(address, ws);
+    registerWsClient(address, ws, inflightCounter);
 
     logger.info(
       { address, ip: clientIp, connections: currentCount + 1 },
@@ -224,12 +244,69 @@ async function createApp() {
     });
   }
 
-  // Graceful shutdown
-  const gracefulShutdown = async (signal: string) => {
+  // ── Graceful shutdown ──────────────────────────────────────────────────────
+  //
+  // Shutdown sequence:
+  //   1. Stop accepting new HTTP requests (httpServer.close).
+  //   2. Stop accepting new WebSocket connections (wss.close with callback).
+  //   3. Wait for the wss.close callback, which fires once all existing WS
+  //      connections have been terminated.
+  //   4. Drain any in-flight DB writes that were already in progress when
+  //      shutdown was triggered (bounded by SHUTDOWN_DRAIN_TIMEOUT_MS).
+  //   5. Tear down ancillary services and close the DB pool.
+  //
+  // A hard-kill timer (drain timeout + 5 s buffer) is armed immediately so
+  // the process always exits even if something hangs.
+  const gracefulShutdown = async (signal: string): Promise<void> => {
     logger.info({ signal }, "Starting graceful shutdown...");
     shuttingDown = true;
 
-    wss.close();
+    // Hard-kill safety net — fires after drain window + 5 s buffer.
+    const forceExitTimer = setTimeout(() => {
+      logger.error(
+        { drainTimeoutMs: SHUTDOWN_DRAIN_TIMEOUT_MS },
+        "Shutdown timed out, forcing exit"
+      );
+      process.exit(1);
+    }, SHUTDOWN_DRAIN_TIMEOUT_MS + 5_000);
+    // Do not let this timer keep the event loop alive if everything drains
+    // cleanly before it fires.
+    forceExitTimer.unref();
+
+    // 1. Stop accepting new HTTP requests.
+    httpServer.close();
+
+    // 2 & 3. Stop accepting new WebSocket connections and wait for existing
+    //        connections to be fully closed before proceeding.
+    await new Promise<void>((resolve) => {
+      wss.close(() => {
+        logger.info("WebSocket server drained");
+        resolve();
+      });
+    });
+
+    // 4. Wait for any DB operations that were already in flight when the WS
+    //    connections closed to finish, capped by the drain timeout.
+    if (inflightCounter.value > 0) {
+      logger.info(
+        { inflight: inflightCounter.value },
+        "Waiting for in-flight DB operations to complete..."
+      );
+      await Promise.race([
+        inflightCounter.drain(),
+        new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_DRAIN_TIMEOUT_MS)),
+      ]);
+      if (inflightCounter.value > 0) {
+        logger.warn(
+          { inflight: inflightCounter.value },
+          "Drain timeout reached; some in-flight writes may have been abandoned"
+        );
+      } else {
+        logger.info("All in-flight DB operations completed");
+      }
+    }
+
+    // 5. Tear down ancillary services, then close the pool.
     cleanupService.stop();
     await closeRateLimiters();
     await database.close();
@@ -241,7 +318,7 @@ async function createApp() {
   process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
   process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
-  return { app: httpServer, database, cleanupService };
+  return { app: httpServer, database, cleanupService, inflightCounter };
 }
 
 async function startServer() {
