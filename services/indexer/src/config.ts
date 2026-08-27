@@ -18,6 +18,18 @@
  *                             — Stop backfilling and require manual intervention
  *                               after this many consecutive failures (default 5).
  *
+ * Retention settings (raw_events partition management)
+ * ──────────────────────────────────────────────────────
+ * RAW_EVENTS_RETENTION_LEDGERS — Number of ledgers to keep before dropping old
+ *                                partitions (default 4 000 000 ≈ 231 days).
+ * RAW_EVENTS_PARTITION_SIZE    — Ledger range per partition bucket
+ *                                (default 1 000 000).  Must match the value
+ *                                used in migration 012.
+ * RAW_EVENTS_ARCHIVE_ONLY      — Set to "true" to detach rather than drop old
+ *                                partitions (default false).
+ * RAW_EVENTS_RETENTION_CRON    — cron schedule for the retention job
+ *                                (default "5 * * * *" — every hour at :05).
+ *
  * Connection pool settings
  * ─────────────────────────
  * DB_POOL_MAX                — Maximum PostgreSQL pool connections (default 20).
@@ -81,6 +93,9 @@ export interface IndexerConfig {
   // Backfill
   backfill: BackfillConfig;
 
+  // Raw-events retention / partition management
+  rawEventsRetention: RawEventsRetentionCfg;
+
   // PostgreSQL connection pool
   dbPool: DbPoolConfig;
 
@@ -127,6 +142,17 @@ export interface BackfillConfig {
   circuitBreakerMaxFailures: number;
 }
 
+export interface RawEventsRetentionCfg {
+  /** Number of ledgers to retain. Default 4 000 000 (≈ 231 days). */
+  retentionLedgers: number;
+  /** Ledger range per partition. Default 1 000 000. */
+  partitionSize: number;
+  /** Detach-only mode — do not DROP old partitions. Default false. */
+  archiveOnly: boolean;
+  /** node-cron schedule. Default every hour at :05. */
+  cronSchedule: string;
+}
+
 /** Parse and validate configuration from environment variables. */
 export function loadConfig(): IndexerConfig {
   const raw = {
@@ -158,6 +184,13 @@ export function loadConfig(): IndexerConfig {
       circuitBreakerMaxFailures: optionalInt("BACKFILL_CIRCUIT_BREAKER_MAX_FAILURES", 5),
     },
 
+    rawEventsRetention: {
+      retentionLedgers: optionalInt("RAW_EVENTS_RETENTION_LEDGERS", 4_000_000),
+      partitionSize: optionalInt("RAW_EVENTS_PARTITION_SIZE", 1_000_000),
+      archiveOnly: process.env.RAW_EVENTS_ARCHIVE_ONLY === "true",
+      cronSchedule: process.env.RAW_EVENTS_RETENTION_CRON ?? "5 * * * *",
+    },
+
     dbPool: {
       max: optionalInt("DB_POOL_MAX", 20),
       idleTimeoutMs: optionalInt("DB_POOL_IDLE_TIMEOUT", 30_000),
@@ -168,7 +201,9 @@ export function loadConfig(): IndexerConfig {
   };
 
   if (!Number.isFinite(raw.startLedger) || raw.startLedger < 0) {
-    throw new Error(`START_LEDGER must be a non-negative integer, got: ${process.env.START_LEDGER}`);
+    throw new Error(
+      `START_LEDGER must be a non-negative integer, got: ${process.env.START_LEDGER}`
+    );
   }
 
   return raw;
