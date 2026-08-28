@@ -2550,17 +2550,18 @@ impl LinkoraContract {
     /// # Arguments
     /// * `pool_id` - Pool identifier
     ///
-    /// # Errors
-    /// * Panics if pool does not exist
-    pub fn get_pool_admins(env: Env, pool_id: Symbol) -> Vec<Address> {
+    /// # Returns
+    /// * `Some(Vec<Address>)` if the pool exists
+    /// * `None` if the pool does not exist
+    pub fn get_pool_admins(env: Env, pool_id: Symbol) -> Option<Vec<Address>> {
         let key = StorageKey::Pool(pool_id);
-        let pool: Pool = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .expect("pool not found");
-        Self::bump(&env, &key);
-        pool.admins
+        let result: Option<Pool> = env.storage().persistent().get(&key);
+        if let Some(pool) = result {
+            Self::bump(&env, &key);
+            Some(pool.admins)
+        } else {
+            None
+        }
     }
 
     /// Adds an admin to a pool. Requires M-of-N admin signatures.
