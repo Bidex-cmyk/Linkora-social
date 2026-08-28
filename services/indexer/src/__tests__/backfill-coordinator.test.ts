@@ -10,10 +10,7 @@
  *   - Reset() clears circuit-breaker state
  */
 
-import {
-  BackfillCoordinator,
-  CircuitBreakerOpenError,
-} from "../services/backfill-coordinator";
+import { BackfillCoordinator, CircuitBreakerOpenError } from "../services/backfill-coordinator";
 import type { BackfillConfig } from "../config";
 import type { RawEvent } from "../stream";
 
@@ -25,6 +22,7 @@ function makeConfig(overrides: Partial<BackfillConfig> = {}): BackfillConfig {
     batchSize: 10,
     rateLimitMs: 0, // no delay in tests by default
     alertThreshold: 500,
+    gapConfirmationLedgers: 100,
     circuitBreakerMaxFailures: 3,
     ...overrides,
   };
@@ -65,7 +63,12 @@ describe("BackfillCoordinator — normal backfill", () => {
     };
 
     const coordinator = new BackfillCoordinator(config, fetcher, noopSleep);
-    const result = await coordinator.recoverGap(101, 150, processBatch, new AbortController().signal);
+    const result = await coordinator.recoverGap(
+      101,
+      150,
+      processBatch,
+      new AbortController().signal
+    );
 
     expect(result).toBe(true);
     expect(coordinator.status).toBe("healthy");
@@ -84,9 +87,18 @@ describe("BackfillCoordinator — normal backfill", () => {
     };
 
     const coordinator = new BackfillCoordinator(config, fetcher, noopSleep);
-    await coordinator.recoverGap(1, 9, async (ev) => ev[ev.length - 1].ledger, new AbortController().signal);
+    await coordinator.recoverGap(
+      1,
+      9,
+      async (ev) => ev[ev.length - 1].ledger,
+      new AbortController().signal
+    );
 
-    expect(fetchCalls).toEqual([[1, 3], [4, 6], [7, 9]]);
+    expect(fetchCalls).toEqual([
+      [1, 3],
+      [4, 6],
+      [7, 9],
+    ]);
   });
 
   it("reports progress throughout recovery", async () => {
@@ -224,7 +236,12 @@ describe("BackfillCoordinator — circuit breaker", () => {
     const coordinator = new BackfillCoordinator(config, fetcher, noopSleep);
 
     await expect(
-      coordinator.recoverGap(1, 10, async (ev) => ev[ev.length - 1].ledger, new AbortController().signal)
+      coordinator.recoverGap(
+        1,
+        10,
+        async (ev) => ev[ev.length - 1].ledger,
+        new AbortController().signal
+      )
     ).rejects.toThrow(CircuitBreakerOpenError);
 
     expect(coordinator.status).toBe("circuit_open");
@@ -242,7 +259,12 @@ describe("BackfillCoordinator — circuit breaker", () => {
 
     // Trip the circuit
     await expect(
-      coordinator.recoverGap(1, 5, async (ev) => ev[ev.length - 1].ledger, new AbortController().signal)
+      coordinator.recoverGap(
+        1,
+        5,
+        async (ev) => ev[ev.length - 1].ledger,
+        new AbortController().signal
+      )
     ).rejects.toThrow(CircuitBreakerOpenError);
 
     // Second call: should throw immediately without calling the fetcher
@@ -250,7 +272,12 @@ describe("BackfillCoordinator — circuit breaker", () => {
     (coordinator as unknown as { _status: string })._status = "circuit_open";
 
     await expect(
-      coordinator.recoverGap(1, 5, async (ev) => ev[ev.length - 1].ledger, new AbortController().signal)
+      coordinator.recoverGap(
+        1,
+        5,
+        async (ev) => ev[ev.length - 1].ledger,
+        new AbortController().signal
+      )
     ).rejects.toThrow(CircuitBreakerOpenError);
   });
 
@@ -267,7 +294,12 @@ describe("BackfillCoordinator — circuit breaker", () => {
     };
 
     const coordinator = new BackfillCoordinator(config, fetcher, noopSleep);
-    await coordinator.recoverGap(1, 10, async (ev) => ev[ev.length - 1].ledger, new AbortController().signal);
+    await coordinator.recoverGap(
+      1,
+      10,
+      async (ev) => ev[ev.length - 1].ledger,
+      new AbortController().signal
+    );
 
     expect(coordinator.status).toBe("healthy");
     expect(coordinator.progress.consecutiveFailures).toBe(0);
@@ -281,7 +313,12 @@ describe("BackfillCoordinator — circuit breaker", () => {
     const coordinator = new BackfillCoordinator(config, fetcher, noopSleep);
 
     await expect(
-      coordinator.recoverGap(1, 5, async (ev) => ev[ev.length - 1].ledger, new AbortController().signal)
+      coordinator.recoverGap(
+        1,
+        5,
+        async (ev) => ev[ev.length - 1].ledger,
+        new AbortController().signal
+      )
     ).rejects.toThrow(CircuitBreakerOpenError);
 
     coordinator.reset();
@@ -303,7 +340,12 @@ describe("BackfillCoordinator — rate limiting", () => {
     };
 
     const coordinator = new BackfillCoordinator(config, fetcher, trackingSleep);
-    await coordinator.recoverGap(1, 6, async (ev) => ev[ev.length - 1].ledger, new AbortController().signal);
+    await coordinator.recoverGap(
+      1,
+      6,
+      async (ev) => ev[ev.length - 1].ledger,
+      new AbortController().signal
+    );
 
     // 3 batches → 2 inter-batch delays (no delay after the last batch)
     expect(sleepDelays).toEqual([50, 50]);
@@ -319,7 +361,12 @@ describe("BackfillCoordinator — rate limiting", () => {
     const coordinator = new BackfillCoordinator(config, fetcher, async (ms) => {
       sleepDelays.push(ms);
     });
-    await coordinator.recoverGap(1, 5, async (ev) => ev[ev.length - 1].ledger, new AbortController().signal);
+    await coordinator.recoverGap(
+      1,
+      5,
+      async (ev) => ev[ev.length - 1].ledger,
+      new AbortController().signal
+    );
 
     expect(sleepDelays).toHaveLength(0);
   });

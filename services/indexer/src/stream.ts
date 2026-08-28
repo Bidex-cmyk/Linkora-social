@@ -57,7 +57,10 @@ export interface StreamConfig {
    * enforce depth limits and emit alerts. When omitted, the legacy unbounded
    * backfill behaviour is used.
    */
-  backfillConfig?: Pick<BackfillConfig, "maxDepthLedgers" | "alertThreshold">;
+  backfillConfig?: Pick<
+    BackfillConfig,
+    "maxDepthLedgers" | "alertThreshold" | "gapConfirmationLedgers"
+  >;
   /**
    * Optional backfill coordinator. When provided, mid-stream gap recovery is
    * delegated to it (enabling depth limits, rate limiting, and the circuit
@@ -238,7 +241,10 @@ export function getBackfillState(): BackfillState {
  * the processed cursor lags behind the RPC's current ledger.
  */
 export async function backfillStartupGap(
-  config: Pick<StreamConfig, "rpcUrl" | "contractId" | "maxRetries" | "backoffBaseMs" | "backoffMaxMs">,
+  config: Pick<
+    StreamConfig,
+    "rpcUrl" | "contractId" | "maxRetries" | "backoffBaseMs" | "backoffMaxMs"
+  >,
   fromLedger: number,
   toLedger: number,
   processBatch: BatchProcessor,
@@ -272,7 +278,15 @@ export async function backfillStartupGap(
   let current = fromLedger;
   while (current <= toLedger && !signal.aborted) {
     const batchTo = Math.min(current + BATCH_SIZE - 1, toLedger);
-    const events = await fetchRange(resolved, backoffCfg, config.rpcUrl, config.contractId, current, batchTo, signal);
+    const events = await fetchRange(
+      resolved,
+      backoffCfg,
+      config.rpcUrl,
+      config.contractId,
+      current,
+      batchTo,
+      signal
+    );
     if (events.length > 0) {
       await processBatch(events);
     }
@@ -416,7 +430,9 @@ export async function streamEvents(
 
       // ── Gap detection ────────────────────────────────────────────────────
       const firstLedger = events[0]?.ledger;
-      const gap = detectGap(firstLedger, cursor, config.backfillConfig);
+      // Pass the RPC's latest considered ledger so sub-finalisation lag is
+      // reported as "still catching up" rather than a durable gap.
+      const gap = detectGap(firstLedger, cursor, config.backfillConfig, latestLedger);
       if (gap.hasGap && gap.fromLedger !== undefined && gap.toLedger !== undefined) {
         console.warn(
           JSON.stringify({
@@ -498,8 +514,7 @@ export async function streamEvents(
         console.warn(
           JSON.stringify({
             metric: "serialization_conflict",
-            message:
-              "Retryable database conflict will not count toward the stream circuit breaker",
+            message: "Retryable database conflict will not count toward the stream circuit breaker",
             code: (err as { code?: unknown }).code,
           })
         );

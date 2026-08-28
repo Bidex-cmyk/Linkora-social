@@ -254,3 +254,82 @@ describe("AttestationCache — stats", () => {
     expect(stats.size).toBe(c.size);
   });
 });
+
+// ── Whole-cache invalidation (signer rotation / window advancement) ─────────
+
+describe("AttestationCache — invalidation", () => {
+  it("clear() drops every entry regardless of TTL", () => {
+    const c = makeCache(10);
+    c.set("a", "1");
+    c.set("b", "2");
+    c.clear();
+    expect(c.size).toBe(0);
+    expect(c.get("a")).toBeUndefined();
+    expect(c.get("b")).toBeUndefined();
+  });
+
+  it("clear() resets the linked list so cached entries cannot resurface", () => {
+    const c = makeCache(10);
+    c.set("a", "1");
+    c.set("b", "2");
+    c.clear();
+    // Re-insert and read — the list must be intact after the resize.
+    c.set("c", "3");
+    expect(c.get("c")).toBe("3");
+    expect(c.size).toBe(1);
+  });
+
+  it("setSignerId clears the cache when the signer key rotates", () => {
+    const c = makeCache(10);
+    c.setSignerId("signer-v1");
+    c.set("creatorA", "att-v1");
+    c.set("creatorB", "att-v2");
+
+    // Key rotation: same identity must not clear, a different one must.
+    c.setSignerId("signer-v1");
+    expect(c.size).toBe(2);
+
+    c.setSignerId("signer-v2");
+    expect(c.size).toBe(0);
+    expect(c.get("creatorA")).toBeUndefined();
+    expect(c.get("creatorB")).toBeUndefined();
+  });
+
+  it("setSignerId(null) — moving from a known signer to none clears the cache", () => {
+    const c = makeCache(10);
+    c.setSignerId("signer");
+    c.set("k", "v");
+    c.setSignerId(null);
+    expect(c.size).toBe(0);
+    // And stays cleared rather than re-clearing on every null call.
+    c.set("k2", "v2");
+    c.setSignerId(null);
+    expect(c.size).toBe(1);
+  });
+
+  it("beginWindow clears the cache once the report window advances", () => {
+    const c = makeCache(10);
+    c.beginWindow(1n, 1000n);
+    c.set("creatorA", "att-window-1000");
+    c.set("creatorB", "att-window-1000");
+
+    // Same window — entries survive.
+    c.beginWindow(1n, 1000n);
+    expect(c.size).toBe(2);
+
+    // Window advances — closed-window attestations are dropped.
+    c.beginWindow(1001n, 2000n);
+    expect(c.size).toBe(0);
+    expect(c.get("creatorA")).toBeUndefined();
+  });
+
+  it("beginWindow then a fresh window stores and serves only current-window entries", () => {
+    const c = makeCache(10);
+    c.beginWindow(1n, 1000n);
+    c.set("creatorA", "stale");
+    c.beginWindow(1001n, 2000n);
+    c.set("creatorA", "current");
+    expect(c.get("creatorA")).toBe("current");
+    expect(c.size).toBe(1);
+  });
+});
