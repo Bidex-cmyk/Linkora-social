@@ -7891,3 +7891,81 @@ fn test_gov_propose_moderation_slash_bps_exceeds_max() {
     let proposer = Address::generate(&env);
     client.gov_propose(&proposer, &GovParameter::ModerationSlashBps, &10_001, &None);
 }
+
+// ── Batch Cleanup Observability Tests ──────────────────────────────────────────
+
+#[test]
+fn test_batch_cleanup_profile_emits_event_summary() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    client.set_profile(
+        &user,
+        &String::from_str(&env, "cleanup_usr"),
+        &Address::generate(&env),
+    );
+
+    // Add 5 followers
+    for i in 0..5 {
+        let follower = Address::generate(&env);
+        client.set_profile(
+            &follower,
+            &String::from_str(&env, &format!("flw{}", i)),
+            &Address::generate(&env),
+        );
+        client.follow(&follower, &user);
+    }
+
+    client.delete_profile(&user);
+
+    client.batch_cleanup_profile(&user, &2);
+    let all_events = env.events().all();
+    assert!(
+        !all_events.events().is_empty(),
+        "batch_cleanup_profile must emit events"
+    );
+
+    // Finish remaining cleanup
+    client.batch_cleanup_profile(&user, &10);
+    assert_eq!(client.get_followers(&user, &0, &10).len(), 0);
+}
+
+#[test]
+fn test_batch_cleanup_post_emits_event_summary() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let author = Address::generate(&env);
+    client.set_profile(
+        &author,
+        &String::from_str(&env, "post_author"),
+        &Address::generate(&env),
+    );
+    let post_id = client.create_post(&author, &String::from_str(&env, "test post"));
+
+    for i in 0..5 {
+        let liker = Address::generate(&env);
+        client.set_profile(
+            &liker,
+            &String::from_str(&env, &format!("lkr{}", i)),
+            &Address::generate(&env),
+        );
+        client.like_post(&liker, &post_id);
+    }
+
+    client.delete_post(&author, &post_id);
+
+    client.batch_cleanup_post(&post_id, &2);
+    let all_events = env.events().all();
+    assert!(
+        !all_events.events().is_empty(),
+        "batch_cleanup_post must emit events"
+    );
+
+    client.batch_cleanup_post(&post_id, &10);
+    assert!(client.get_post(&post_id).is_none());
+}
+

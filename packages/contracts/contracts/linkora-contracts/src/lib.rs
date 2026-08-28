@@ -558,20 +558,24 @@ pub struct ReportDismissedEvent {
 
 // ── Issue #946: missing events for batch ops and admin functions ──────────────
 
+/// Emitted during `batch_cleanup_profile` to report progress and remaining entry count to indexers.
 #[contractevent]
 #[derive(Clone)]
 pub struct BatchCleanupProfileEvent {
     #[topic]
     pub user: Address,
     pub cleaned_entries: u32,
+    pub remaining_entries: u32,
 }
 
+/// Emitted during `batch_cleanup_post` to report progress and remaining entry count to indexers.
 #[contractevent]
 #[derive(Clone)]
 pub struct BatchCleanupPostEvent {
     #[topic]
     pub post_id: u64,
     pub cleaned_entries: u32,
+    pub remaining_entries: u32,
 }
 
 #[contractevent]
@@ -1087,6 +1091,8 @@ impl LinkoraContract {
             Self::bump(&env, &author_key);
         }
 
+        let remaining_entries: u32 = f_count + following_count + author_posts.len() as u32;
+
         if f_count == 0 && following_count == 0 && author_posts.is_empty() {
             env.storage().persistent().remove(&tombstone_key);
         }
@@ -1094,6 +1100,7 @@ impl LinkoraContract {
         BatchCleanupProfileEvent {
             user,
             cleaned_entries: entries_removed,
+            remaining_entries,
         }
         .publish(&env);
     }
@@ -2040,6 +2047,8 @@ impl LinkoraContract {
             Self::bump(&env, &tc_count_key);
         }
 
+        let remaining_entries: u32 = likes_count + reports_count + tc_count;
+
         // Finalize Tombstone Removal
         if likes_count == 0 && reports_count == 0 && tc_count == 0 {
             env.storage().persistent().remove(&tombstone_key);
@@ -2048,6 +2057,7 @@ impl LinkoraContract {
         BatchCleanupPostEvent {
             post_id,
             cleaned_entries: entries_removed,
+            remaining_entries,
         }
         .publish(&env);
     }
