@@ -6,8 +6,7 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "rootDir": "../..",
-    "noEmit": true,
-    "moduleResolution": "node"
+    "noEmit": true
   },
   "include": ["src"]
 }

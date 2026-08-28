@@ -8,14 +8,8 @@
     "rootDir": "src",
     "strict": true,
     "esModuleInterop": true,
-    "skipLibCheck": true,
-    "baseUrl": ".",
-    "paths": {
-      "@linkora/types": ["../../packages/types/src/index.ts"],
-      "@linkora/types/src/*.js": ["../../packages/types/src/*.ts"],
-      "@linkora/types/src/*": ["../../packages/types/src/*"],
-      "@jest/globals": ["../../node_modules/.pnpm/@jest+globals@29.7.0/node_modules/@jest/globals"]
-    }
+    "resolveJsonModule": true,
+    "skipLibCheck": true
   },
   "include": ["src"],
   "exclude": ["node_modules", "dist"]
