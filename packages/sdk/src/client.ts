@@ -772,8 +772,22 @@ export class LinkoraClient extends GeneratedLinkoraClient {
       });
     }
 
-    const effectiveHorizonUrl = horizonUrl ?? this._horizonUrl ?? this.getDefaultHorizonUrl();
+    const sourceAccount = await this.getAccountForTx(userAddress, horizonUrl);
+    const tx = await this.prepareTransaction(
+      "publish_dm_key",
+      sourceAccount,
+      nativeToScVal(userAddress, { type: "address" }),
+      nativeToScVal(Array.from(x25519PubKey), { type: "bytes" })
+    );
 
+    return tx.toEnvelope().toXDR("base64");
+  }
+
+  /**
+   * Helper to fetch the latest sequence number from Horizon and return a Stellar Account.
+   */
+  private async getAccountForTx(userAddress: string, horizonUrl?: string): Promise<Account> {
+    const effectiveHorizonUrl = horizonUrl ?? this._horizonUrl ?? this.getDefaultHorizonUrl();
     const res = await fetchWithTimeout(
       `${effectiveHorizonUrl}/accounts/${userAddress}`,
       undefined,
@@ -786,16 +800,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
       );
     }
     const data = (await res.json()) as { sequence: string };
-
-    const sourceAccount = new Account(userAddress, data.sequence);
-    const tx = await this.prepareTransaction(
-      "publish_dm_key",
-      sourceAccount,
-      nativeToScVal(userAddress, { type: "address" }),
-      nativeToScVal(Array.from(x25519PubKey), { type: "bytes" })
-    );
-
-    return tx.toEnvelope().toXDR("base64");
+    return new Account(userAddress, data.sequence);
   }
 
   private getDefaultHorizonUrl(): string {
@@ -994,7 +999,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
    *
    * @param author The Stellar public key of the author.
    * @param content The text content of the post.
-   * @returns The base64-encoded XDR of the transaction operation.
+   * @returns A base64-encoded transaction XDR built with a throwaway keypair (not directly submittable).
    *
    * @example
    * ```ts
@@ -1006,6 +1011,31 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     ensureAddress(author, "author");
     ensureNonEmptyString(content, "content");
     return super.createPost(author, content);
+  }
+
+  /**
+   * Build a submittable create_post transaction with the caller as the proper source account.
+   *
+   * @param author The Stellar public key of the author.
+   * @param content The text content of the post.
+   * @param horizonUrl Optional Horizon URL to use. Defaults based on the network passphrase.
+   * @returns The base64-encoded transaction envelope XDR ready for wallet signing.
+   */
+  async prepareCreatePostTx(
+    author: string,
+    content: string,
+    horizonUrl?: string
+  ): Promise<string> {
+    ensureAddress(author, "author");
+    ensureNonEmptyString(content, "content");
+    const sourceAccount = await this.getAccountForTx(author, horizonUrl);
+    const tx = await this.prepareTransaction(
+      "create_post",
+      sourceAccount,
+      scvAddress(author),
+      scvString(content)
+    );
+    return tx.toEnvelope().toXDR("base64");
   }
 
   /**
@@ -1032,7 +1062,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
    *
    * @param follower The Stellar public key of the follower.
    * @param followee The Stellar public key of the user to follow.
-   * @returns The base64-encoded XDR of the transaction operation.
+   * @returns A base64-encoded transaction XDR built with a throwaway keypair (not directly submittable).
    *
    * @example
    * ```ts
@@ -1047,11 +1077,36 @@ export class LinkoraClient extends GeneratedLinkoraClient {
   }
 
   /**
+   * Build a submittable follow transaction with the caller as the proper source account.
+   *
+   * @param follower The Stellar public key of the follower.
+   * @param followee The Stellar public key of the user to follow.
+   * @param horizonUrl Optional Horizon URL to use. Defaults based on the network passphrase.
+   * @returns The base64-encoded transaction envelope XDR ready for wallet signing.
+   */
+  async prepareFollowTx(
+    follower: string,
+    followee: string,
+    horizonUrl?: string
+  ): Promise<string> {
+    ensureAddress(follower, "follower");
+    ensureAddress(followee, "followee");
+    const sourceAccount = await this.getAccountForTx(follower, horizonUrl);
+    const tx = await this.prepareTransaction(
+      "follow",
+      sourceAccount,
+      scvAddress(follower),
+      scvAddress(followee)
+    );
+    return tx.toEnvelope().toXDR("base64");
+  }
+
+  /**
    * Unfollow a user.
    *
    * @param follower The Stellar public key of the follower.
    * @param followee The Stellar public key of the user to unfollow.
-   * @returns The base64-encoded XDR of the transaction operation.
+   * @returns A base64-encoded transaction XDR built with a throwaway keypair (not directly submittable).
    *
    * @example
    * ```ts
@@ -1063,6 +1118,31 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     ensureAddress(follower, "follower");
     ensureAddress(followee, "followee");
     return super.unfollow(follower, followee);
+  }
+
+  /**
+   * Build a submittable unfollow transaction with the caller as the proper source account.
+   *
+   * @param follower The Stellar public key of the follower.
+   * @param followee The Stellar public key of the user to unfollow.
+   * @param horizonUrl Optional Horizon URL to use. Defaults based on the network passphrase.
+   * @returns The base64-encoded transaction envelope XDR ready for wallet signing.
+   */
+  async prepareUnfollowTx(
+    follower: string,
+    followee: string,
+    horizonUrl?: string
+  ): Promise<string> {
+    ensureAddress(follower, "follower");
+    ensureAddress(followee, "followee");
+    const sourceAccount = await this.getAccountForTx(follower, horizonUrl);
+    const tx = await this.prepareTransaction(
+      "unfollow",
+      sourceAccount,
+      scvAddress(follower),
+      scvAddress(followee)
+    );
+    return tx.toEnvelope().toXDR("base64");
   }
 
   /**
@@ -1108,7 +1188,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
    *
    * @param user The Stellar public key of the user liking the post.
    * @param postId The ID of the post.
-   * @returns The base64-encoded XDR of the transaction operation.
+   * @returns A base64-encoded transaction XDR built with a throwaway keypair (not directly submittable).
    *
    * @example
    * ```ts
@@ -1123,13 +1203,38 @@ export class LinkoraClient extends GeneratedLinkoraClient {
   }
 
   /**
+   * Build a submittable like_post transaction with the caller as the proper source account.
+   *
+   * @param user The Stellar public key of the user liking the post.
+   * @param postId The ID of the post.
+   * @param horizonUrl Optional Horizon URL to use. Defaults based on the network passphrase.
+   * @returns The base64-encoded transaction envelope XDR ready for wallet signing.
+   */
+  async prepareLikePostTx(
+    user: string,
+    postId: number | bigint,
+    horizonUrl?: string
+  ): Promise<string> {
+    ensureAddress(user, "user");
+    ensurePositiveInteger(postId, "postId");
+    const sourceAccount = await this.getAccountForTx(user, horizonUrl);
+    const tx = await this.prepareTransaction(
+      "like_post",
+      sourceAccount,
+      scvAddress(user),
+      scvU64(postId)
+    );
+    return tx.toEnvelope().toXDR("base64");
+  }
+
+  /**
    * Tip the author of a post.
    *
    * @param tipper The Stellar public key of the user sending the tip.
    * @param postId The ID of the post whose author will receive the tip.
    * @param token The contract ID of the token used for the tip.
    * @param amount The tip amount in stroops (or smallest decimal unit).
-   * @returns The base64-encoded XDR of the transaction operation.
+   * @returns A base64-encoded transaction XDR built with a throwaway keypair (not directly submittable).
    *
    * @example
    * ```ts
@@ -1143,6 +1248,39 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     ensureAddress(token, "token");
     ensurePositiveInteger(amount, "amount");
     return super.tip(tipper, BigInt(postId), token, BigInt(amount));
+  }
+
+  /**
+   * Build a submittable tip transaction with the caller as the proper source account.
+   *
+   * @param tipper The Stellar public key of the user sending the tip.
+   * @param postId The ID of the post whose author will receive the tip.
+   * @param token The contract ID of the token used for the tip.
+   * @param amount The tip amount in stroops.
+   * @param horizonUrl Optional Horizon URL to use. Defaults based on the network passphrase.
+   * @returns The base64-encoded transaction envelope XDR ready for wallet signing.
+   */
+  async prepareTipTx(
+    tipper: string,
+    postId: number | bigint,
+    token: string,
+    amount: number | bigint,
+    horizonUrl?: string
+  ): Promise<string> {
+    ensureAddress(tipper, "tipper");
+    ensurePositiveInteger(postId, "postId");
+    ensureAddress(token, "token");
+    ensurePositiveInteger(amount, "amount");
+    const sourceAccount = await this.getAccountForTx(tipper, horizonUrl);
+    const tx = await this.prepareTransaction(
+      "tip",
+      sourceAccount,
+      scvAddress(tipper),
+      scvU64(postId),
+      scvAddress(token),
+      scvI128(amount)
+    );
+    return tx.toEnvelope().toXDR("base64");
   }
 
   /**
@@ -1189,7 +1327,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
    * @param poolId The ID of the pool.
    * @param token The contract ID of the token.
    * @param amount The amount to deposit.
-   * @returns The base64-encoded XDR of the transaction operation.
+   * @returns A base64-encoded transaction XDR built with a throwaway keypair (not directly submittable).
    *
    * @example
    * ```ts
@@ -1203,6 +1341,39 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     ensureAddress(token, "token");
     ensurePositiveInteger(amount, "amount");
     return super.poolDeposit(depositor, poolId, token, BigInt(amount));
+  }
+
+  /**
+   * Build a submittable pool_deposit transaction with the caller as the proper source account.
+   *
+   * @param depositor The Stellar public key of the user depositing tokens.
+   * @param poolId The ID of the pool.
+   * @param token The contract ID of the token.
+   * @param amount The amount to deposit.
+   * @param horizonUrl Optional Horizon URL to use. Defaults based on the network passphrase.
+   * @returns The base64-encoded transaction envelope XDR ready for wallet signing.
+   */
+  async preparePoolDepositTx(
+    depositor: string,
+    poolId: string,
+    token: string,
+    amount: number | bigint,
+    horizonUrl?: string
+  ): Promise<string> {
+    ensureAddress(depositor, "depositor");
+    ensureNonEmptyString(poolId, "poolId");
+    ensureAddress(token, "token");
+    ensurePositiveInteger(amount, "amount");
+    const sourceAccount = await this.getAccountForTx(depositor, horizonUrl);
+    const tx = await this.prepareTransaction(
+      "pool_deposit",
+      sourceAccount,
+      scvAddress(depositor),
+      scvSymbol(poolId),
+      scvAddress(token),
+      scvI128(amount)
+    );
+    return tx.toEnvelope().toXDR("base64");
   }
 
   /**
