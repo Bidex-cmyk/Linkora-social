@@ -19,6 +19,12 @@ jest.mock("@stellar/stellar-sdk/rpc", () => ({
 
 jest.mock("@stellar/stellar-base", () => ({
   Contract: jest.fn(() => ({ call: mockCall })),
+  StrKey: {
+    isValidEd25519PublicKey: jest.fn(
+      (value: string) => typeof value === "string" && value.startsWith("G")
+    ),
+    isValidContract: jest.fn((value: string) => typeof value === "string" && value.startsWith("C")),
+  },
   nativeToScVal: jest.fn((val: unknown, opts?: unknown) => ({
     _type: "scval",
     _val: val,
@@ -279,31 +285,31 @@ describe("LinkoraClient read methods", () => {
       await expect(client.getPostCount()).rejects.toThrow("Unauthorized");
     });
   });
-});
 
-describe("contract address validation", () => {
-  it("accepts valid contract addresses (C...)", () => {
-    const contractId = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
-    expect(() => client.setProfile("GUSER", "alice", contractId)).not.toThrow();
-  });
+  describe("contract address validation", () => {
+    it("accepts valid contract addresses (C...)", () => {
+      const contractId = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
+      expect(() => client.setProfile("GUSER", "alice", contractId)).not.toThrow();
+    });
 
-  it("accepts valid account addresses (G...)", () => {
-    const accountKey = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
-    expect(() => client.setProfile("GUSER", "alice", accountKey)).not.toThrow();
-  });
+    it("accepts valid account addresses (G...)", () => {
+      const accountKey = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+      expect(() => client.setProfile("GUSER", "alice", accountKey)).not.toThrow();
+    });
 
-  it("rejects invalid addresses", () => {
-    expect(() => client.setProfile("GUSER", "alice", "invalid")).toThrow("must be a valid");
-  });
+    it("rejects invalid addresses", () => {
+      expect(() => client.setProfile("GUSER", "alice", "invalid")).toThrow("must be a valid");
+    });
 
-  it("accepts contract IDs in tip method", () => {
-    const contractId = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
-    expect(() => client.tip("GUSER", 1n, contractId, 100n)).not.toThrow();
-  });
+    it("accepts contract IDs in tip method", () => {
+      const contractId = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
+      expect(() => client.tip("GUSER", 1n, contractId, 100n)).not.toThrow();
+    });
 
-  it("accepts contract IDs in poolDeposit method", () => {
-    const contractId = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
-    expect(() => client.poolDeposit("GUSER", "pool1", contractId, 100n)).not.toThrow();
+    it("accepts contract IDs in poolDeposit method", () => {
+      const contractId = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
+      expect(() => client.poolDeposit("GUSER", "pool1", contractId, 100n)).not.toThrow();
+    });
   });
 });
 

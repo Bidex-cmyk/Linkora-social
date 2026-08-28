@@ -503,6 +503,7 @@ fn test_tip_fee_split() {
     client.initialize(&admin, &treasury, &250);
 
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "Fee test post"));
 
     // Tip 1000 units
@@ -535,6 +536,7 @@ fn test_tip_blocked_by_author() {
     client.initialize(&admin, &treasury, &250);
 
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "Test post"));
 
     // Author blocks tipper
@@ -560,6 +562,7 @@ fn test_tip_after_unblock() {
     client.initialize(&admin, &treasury, &250);
 
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "Test post"));
 
     // Author blocks tipper
@@ -594,6 +597,7 @@ fn test_tip_non_blocked_user() {
     let token = setup_token(&env, &tipper1);
     StellarAssetClient::new(&env, &token).mint(&tipper2, &5000);
 
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "Test post"));
 
     // Author blocks tipper1
@@ -632,6 +636,7 @@ fn test_tip_block_preserves_no_state_changes_on_panic() {
     client.initialize(&admin, &treasury, &250);
 
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "block-prevented tip post"));
 
     // Author blocks tipper.
@@ -778,6 +783,7 @@ fn test_tip_block_multiple_blocked_tippers_panic_independently() {
     StellarAssetClient::new(&env, &token).mint(&blocked_b, &5_000);
     StellarAssetClient::new(&env, &token).mint(&unblocked, &10_000);
 
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "multi-block post"));
 
     // Author blocks two different addresses.
@@ -2952,6 +2958,7 @@ fn test_tip_full_flow_no_fee() {
     client.initialize(&admin, &treasury, &0);
 
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "No-fee tip test"));
 
     let tip_amount: i128 = 1000;
@@ -2996,6 +3003,7 @@ fn test_tip_full_flow_with_5_percent_fee() {
     client.initialize(&admin, &treasury, &500);
 
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "5% fee tip test"));
 
     let tip_amount: i128 = 1000;
@@ -3047,6 +3055,7 @@ fn test_tip_total_increments_across_multiple_tips() {
     // Mint tokens for tipper2 as well
     StellarAssetClient::new(&env, &token).mint(&tipper2, &5000);
 
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "Multi-tip test"));
 
     // First tip from tipper1 (advance ledger to bypass cooldown)
@@ -3081,6 +3090,7 @@ fn test_tip_fee_split_matches_fee_bps_config() {
     client.initialize(&admin, &treasury, &250);
 
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "Fee split config test"));
 
     let tip_amount: i128 = 2000;
@@ -3602,6 +3612,7 @@ fn test_tip_cooldown_rejects_within_window() {
     client.set_tip_cooldown_window(&admin, &10);
 
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "cooldown test post"));
 
     client.tip(&tipper, &post_id, &token, &100);
@@ -3626,6 +3637,7 @@ fn test_tip_cooldown_allows_after_window() {
     client.set_tip_cooldown_window(&admin, &10);
 
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "cooldown test post"));
 
     client.tip(&tipper, &post_id, &token, &100);
@@ -3937,6 +3949,7 @@ fn test_tip_cooldown_uses_typed_storage_key() {
     client.set_tip_cooldown_window(&admin, &100);
 
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "cooldown key test"));
 
     // First tip succeeds and records the cooldown under StorageKey::TipCooldown.
@@ -5038,6 +5051,7 @@ fn test_tip_cooldown_100_ledgers_immediate_retip_panics() {
     client.set_tip_cooldown_window(&admin, &100);
 
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "cooldown 100 post"));
 
     // First tip succeeds
@@ -5063,6 +5077,7 @@ fn test_tip_cooldown_100_ledgers_allows_after_advance() {
     client.set_tip_cooldown_window(&admin, &100);
 
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "cooldown 100 post"));
 
     // First tip succeeds
@@ -5528,6 +5543,7 @@ fn test_tip_panics_when_tipper_blocked_author() {
     let author = Address::generate(&env);
 
     let token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token);
     let post_id = client.create_post(&author, &String::from_str(&env, "test post"));
 
     // Tipper blocks author
