@@ -66,6 +66,7 @@ pub enum StorageKey {
     PostReportersIdx(u64, u32),    // persistent: (post_id, seq) -> Address (Count is ReportCount)
     PostTipCooldownsCount(u64),    // persistent: post_id -> u32
     PostTipCooldownsIdx(u64, u32), // persistent: (post_id, seq) -> Address
+    UpgradeProposal,                 // instance: staged WASM upgrade proposal
 }
 
 // ── Instance-storage key constants (small scalars, not contracttype) ──────────
@@ -85,6 +86,9 @@ const ROLES: Symbol = symbol_short!("ROLES");
 const PAUSED: Symbol = symbol_short!("PAUSED");
 const MAX_POST_LEN_KEY: Symbol = symbol_short!("MAX_POST");
 const MAX_BIO_LEN_KEY: Symbol = symbol_short!("MAX_BIO");
+
+// ── Upgrade Timelock ──────────────────────────────────────────────────────────
+const UPGRADE_TIMELOCK_LEDGERS: u32 = 17_280; // approximately one day at 5s/ledger
 
 // ── TTL Constants ─────────────────────────────────────────────────────────────
 //
@@ -148,6 +152,14 @@ pub struct ContractState {
     pub version: u32,
     /// Last known implementation hash. Updated on each successful upgrade.
     pub implementation_wasm_hash: Option<BytesN<32>>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct UpgradeProposal {
+    pub new_wasm_hash: BytesN<32>,
+    pub proposed_ledger: u32,
+    pub executable_ledger: u32,
 }
 
 // ── Governance Types ─────────────────────────────────────────────────────────
@@ -3431,19 +3443,48 @@ impl LinkoraContract {
 
     // ── Upgradability ─────────────────────────────────────────────────────────
 
-    /// Upgrades the contract WASM. Requires Upgrader role.
-    /// Increments the contract version and deploys the new implementation.
-    ///
-    /// # Arguments
-    /// * `upgrader` - Must hold the Upgrader role
-    /// * `new_wasm_hash` - Hash of the new WASM bytecode
-    ///
-    /// # Errors
-    /// * Panics if caller does not have Upgrader role
-    /// * Panics if wasm hash is all zeros
-    /// * Panics if contract is paused
-    pub fn upgrade(env: Env, upgrader: Address, new_wasm_hash: BytesN<32>) {
+    /// Proposes a contract WASM upgrade. Execution is available after the timelock.
+    pub fn propose_upgrade(env: Env, upgrader: Address, new_wasm_hash: BytesN<32>) {
         Self::bump_instance(&env);
+        upgrader.require_auth();
+        validate_non_default_address(&env, "upgrader", &upgrader);
+        Self::require_role(&env, &upgrader, Role::Upgrader);
+        require_with_error!(&env, new_wasm_hash != BytesN::from_array(&env, &[0u8; 32]), "wasm hash must not be empty");
+        let proposed_ledger = env.ledger().sequence();
+        env.storage().instance().set(&StorageKey::UpgradeProposal, &UpgradeProposal {
+            new_wasm_hash,
+            proposed_ledger,
+            executable_ledger: proposed_ledger.saturating_add(UPGRADE_TIMELOCK_LEDGERS),
+        });
+    }
+
+    /// Executes the previously proposed contract WASM upgrade after the timelock.
+    pub fn execute_upgrade(env: Env, upgrader: Address) {
+        Self::bump_instance(&env);
+        upgrader.require_auth();
+        validate_non_default_address(&env, "upgrader", &upgrader);
+        Self::require_role(&env, &upgrader, Role::Upgrader);
+        Self::require_not_paused(&env);
+        let proposal: UpgradeProposal = env.storage().instance().get(&StorageKey::UpgradeProposal).expect("upgrade not proposed");
+        require_with_error!(&env, env.ledger().sequence() >= proposal.executable_ledger, "upgrade timelock not elapsed");
+        let mut state: ContractState = env.storage().instance().get(&CONTRACT_STATE).unwrap();
+        state.version = state.version.checked_add(1).expect("contract version overflow");
+        state.implementation_wasm_hash = Some(proposal.new_wasm_hash.clone());
+        env.storage().instance().set(&CONTRACT_STATE, &state);
+        env.deployer().update_current_contract_wasm(proposal.new_wasm_hash.clone());
+        env.storage().instance().remove(&StorageKey::UpgradeProposal);
+        ContractUpgraded { new_wasm_hash: proposal.new_wasm_hash }.publish(&env);
+    }
+
+    /// Deprecated immediate-upgrade entrypoint. Upgrades must use
+    /// `propose_upgrade` followed by `execute_upgrade`.
+    pub fn upgrade(env: Env, upgrader: Address, new_wasm_hash: BytesN<32>) {
+        upgrader.require_auth();
+        validate_non_default_address(&env, "upgrader", &upgrader);
+        Self::require_role(&env, &upgrader, Role::Upgrader);
+        let _ = new_wasm_hash;
+        panic!("immediate upgrades are disabled; use propose_upgrade and execute_upgrade");
+        /*
         let mut state: ContractState = env.storage().instance().get(&CONTRACT_STATE).unwrap();
         upgrader.require_auth();
         validate_non_default_address(&env, "upgrader", &upgrader);
@@ -3463,6 +3504,7 @@ impl LinkoraContract {
         env.deployer()
             .update_current_contract_wasm(new_wasm_hash.clone());
         ContractUpgraded { new_wasm_hash }.publish(&env);
+        */
     }
 
     /// Return contract state.

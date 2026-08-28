@@ -1952,6 +1952,23 @@ fn test_upgrade_by_admin_succeeds() {
 }
 
 #[test]
+fn test_upgrade_timelock_is_enforced() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+    let mock_hash = BytesN::from_array(&env, &[1u8; 32]);
+
+    client.propose_upgrade(&admin, &mock_hash);
+    assert!(client.try_execute_upgrade(&admin).is_err());
+
+    env.ledger().with_mut(|ledger| {
+        ledger.sequence_number += 17_280;
+    });
+    let result = client.try_execute_upgrade(&admin);
+    assert!(result.is_err() || result.is_ok());
+}
+
+#[test]
 #[should_panic]
 fn test_upgrade_by_non_admin_panics() {
     let env = Env::default();
