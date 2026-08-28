@@ -262,3 +262,92 @@ describe("full key-exchange flow", () => {
     expect(plain).toBe(msg);
   });
 });
+
+// ── Relay sendMessage retry tests ────────────────────────────────────────────
+
+describe("RelayClient sendMessage retry logic", () => {
+  it("should not retry on 4xx errors", async () => {
+    const { RelayClient } = await import("../relay");
+    const client = new RelayClient("https://relay.example.com");
+    const keypair = generateDmKeypair();
+    const mockFetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      text: async () => "Bad request",
+    });
+    global.fetch = mockFetch as unknown as typeof fetch;
+
+    await expect(
+      client.sendMessage(
+        {
+          publicKey: () => "GTEST",
+          sign: () => new Uint8Array(64),
+        } as unknown as import("@stellar/stellar-base").Keypair,
+        "GRECIPIENT",
+        new Uint8Array(100),
+        0
+      )
+    ).rejects.toThrow("non-retryable");
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("should retry on 5xx errors with exponential backoff", async () => {
+    const { RelayClient } = await import("../relay");
+    const client = new RelayClient("https://relay.example.com");
+    const mockFetch = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        text: async () => "Server error",
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        text: async () => "Service unavailable",
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () => "OK",
+      });
+    global.fetch = mockFetch as unknown as typeof fetch;
+
+    await client.sendMessage(
+      {
+        publicKey: () => "GTEST",
+        sign: () => new Uint8Array(64),
+      } as unknown as import("@stellar/stellar-base").Keypair,
+      "GRECIPIENT",
+      new Uint8Array(100),
+      0
+    );
+
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("should stop retrying after maxRetries", async () => {
+    const { RelayClient } = await import("../relay");
+    const client = new RelayClient("https://relay.example.com");
+    const mockFetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: async () => "Server error",
+    });
+    global.fetch = mockFetch as unknown as typeof fetch;
+
+    await expect(
+      client.sendMessage(
+        {
+          publicKey: () => "GTEST",
+          sign: () => new Uint8Array(64),
+        } as unknown as import("@stellar/stellar-base").Keypair,
+        "GRECIPIENT",
+        new Uint8Array(100),
+        0
+      )
+    ).rejects.toThrow();
+
+    expect(mockFetch).toHaveBeenCalledTimes(4);
+  });
+});
