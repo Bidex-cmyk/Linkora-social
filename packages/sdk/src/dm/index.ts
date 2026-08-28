@@ -40,6 +40,7 @@ export {
   RelayClient,
   RelayAuthError,
   getConversationId,
+  detectKeyRotation,
   type RelayMessage,
   type ConversationMessage,
   type SendMessageRequest,
@@ -47,6 +48,7 @@ export {
   type ConnectionState,
   type ConnectionStateCallback,
   type RelayClientConfig,
+  type KeyRotationResult,
 } from "./relay.js";
 
 /**

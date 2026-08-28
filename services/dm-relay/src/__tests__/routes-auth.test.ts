@@ -97,7 +97,7 @@ describe("route-scoped auth", () => {
   it("health endpoints require no auth at all", async () => {
     const res = await fetch(`${url}/health/live`);
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as { status: string };
     expect(body.status).toBe("alive");
   });
 });
