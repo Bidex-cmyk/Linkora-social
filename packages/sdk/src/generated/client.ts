@@ -85,7 +85,9 @@ export class GeneratedLinkoraClient {
     this.contractId = config.contractId;
     this.rpcUrl = config.rpcUrl;
     this.networkPassphrase = config.networkPassphrase || DEFAULT_NETWORK;
-    this.allowHttp = config.allowHttp ?? config.rpcUrl.startsWith("http://");
+    // Insecure HTTP is disabled by default. Callers must explicitly opt in via
+    // `allowHttp: true` for local development endpoints.
+    this.allowHttp = config.allowHttp ?? false;
   }
 
   private async simulateCall(method: string, ...args: xdr.ScVal[]): Promise<xdr.ScVal | null> {

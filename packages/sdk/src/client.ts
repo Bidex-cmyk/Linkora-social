@@ -31,6 +31,66 @@ const { isSimulationError, isSimulationSuccess } = rpc.Api;
 const DEFAULT_NETWORK = "Test SDF Network ; September 2015";
 const DEFAULT_TIMEOUT = 30;
 
+/**
+ * Detect whether a hostname refers to the local machine (loopback only).
+ * `localhost`, `127.0.0.0/8` and `[::1]` are considered local. Anything else
+ * (including LAN addresses) is treated as remote.
+ */
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (host === "localhost") return true;
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  return host === "::1" || host === "0:0:0:0:0:0:0:1";
+}
+
+/**
+ * Resolve the effective `allowHttp` setting.
+ *
+ * Insecure `http://` is rejected unless explicitly opted-in. Local (loopback)
+ * hosts may opt in via `allowHttp: true` (development networks). Non-loopback
+ * `http://` hosts are always rejected — even when `allowHttp: true` — so that a
+ * misconfigured public RPC can never transit transaction/XDR data in plaintext.
+ */
+function resolveAllowHttp(config: { rpcUrl: string; allowHttp?: boolean }): boolean {
+  const explicit = Boolean(config.allowHttp);
+  const isHttp = config.rpcUrl.startsWith("http://");
+  if (!isHttp) return explicit ? true : false;
+
+  let hostname = "";
+  try {
+    hostname = new URL(config.rpcUrl).hostname;
+  } catch {
+    hostname = config.rpcUrl;
+  }
+
+  const local = isLoopbackHost(hostname);
+
+  if (!explicit) {
+    throw new Error(
+      `Refusing to use insecure HTTP RPC at "${config.rpcUrl}". ` +
+        `Local development RPCs must opt in explicitly by passing allowHttp: true. ` +
+        `Use an https:// RPC URL for any remote endpoint.`
+    );
+  }
+
+  if (!local) {
+    throw new Error(
+      `Refusing to use insecure HTTP RPC at "${config.rpcUrl}". ` +
+        `Plaintext HTTP is only permitted for local (loopback) development endpoints. ` +
+        `Use an https:// RPC URL.`
+    );
+  }
+
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[linkora-sdk] Warning: connecting to an insecure HTTP RPC at "${config.rpcUrl}". ` +
+      `This is intended for local development only and should never be used with a ` +
+      `production or mainnet endpoint.`
+  );
+
+  return true;
+}
+
 function scvAddress(value: string): xdr.ScVal {
   return nativeToScVal(value, { type: "address" });
 }
@@ -117,8 +177,13 @@ export interface ClientConfig {
   /** Timeout in ms for HTTP requests (default 30 000). */
   timeoutMs?: number;
   /**
-   * Allow insecure `http://` RPC connections (local development networks).
-   * Defaults to true when `rpcUrl` starts with `http://`.
+   * Allow insecure `http://` RPC connections (local development networks only).
+   *
+   * Insecure HTTP is **disabled by default**. To use a local development RPC
+   * over plaintext `http://` (e.g. `http://localhost:8000`), explicitly set
+   * this to `true`. Non-localhost `http://` RPC URLs are always rejected
+   * (even with this flag set) to keep sensitive transaction/XDR data from
+   * transiting in the clear — see {@link ClientConfig.allowHttp}.
    */
   allowHttp?: boolean;
   /** Horizon URL for account sequence fetching. If not provided, defaults based on networkPassphrase. */
@@ -167,7 +232,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     this._rpcUrl = config.rpcUrl;
     this._networkPassphrase = config.networkPassphrase || DEFAULT_NETWORK;
     this._timeoutMs = config.timeoutMs ?? 30_000;
-    this._allowHttp = config.allowHttp ?? config.rpcUrl.startsWith("http://");
+    this._allowHttp = resolveAllowHttp({ rpcUrl: config.rpcUrl, allowHttp: config.allowHttp });
     this._horizonUrl = config.horizonUrl;
 
     const { autoStart, ...healthCfg } = config.healthCheck ?? {};
