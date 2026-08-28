@@ -70,3 +70,22 @@ try {
 
 The lower-level primitives (`backoffWithJitter`, `CircuitBreaker`,
 `parseRetryAfter`, `withRetry`) are exported directly for reuse.
+
+## API Semantics
+
+The SDK exposes two distinct paths for mutative (write) operations:
+
+### 1. `prepare*Tx` (Submittable)
+Methods like `prepareCreatePostTx`, `prepareFollowTx`, and `prepareDmKeyTx` are the **intended path for client-side applications**.
+They fetch the actual account sequence from Horizon, simulate the transaction to discover footprint/fees, and return a base64-encoded `TransactionEnvelope` XDR that is fully ready to be signed (e.g. by Freighter) and submitted to the network.
+
+```ts
+const txXdr = await client.prepareCreatePostTx("GBFOY...", "Hello!");
+// txXdr is ready to be passed to wallet for signing
+```
+
+### 2. Base Write Methods (Throwaway XDR)
+Methods like `createPost`, `follow`, and `tip` **do not fetch sequence numbers** and return XDR built using a throwaway `Keypair`.
+**These are not directly submittable.** They exist primarily to easily extract the Soroban `Operation` for batching (e.g., passing to `buildMultiOpTx`) or for server-side queueing where sequence management is handled by a background worker (like `TransactionQueue`).
+
+If you attempt to sign and submit this XDR directly, the network will reject it with a `tx_bad_seq` error.
