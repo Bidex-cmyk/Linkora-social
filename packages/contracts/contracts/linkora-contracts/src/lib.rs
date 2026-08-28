@@ -2420,7 +2420,7 @@ impl LinkoraContract {
         let balance_before = token_client.balance(&env.current_contract_address());
 
         // Transfer tokens
-        token_client.transfer(&depositor, &env.current_contract_address(), &amount);
+        token_client.transfer(&depositor, env.current_contract_address(), &amount);
 
         // Verify balance increased by exactly the amount claimed
         let balance_after = token_client.balance(&env.current_contract_address());
