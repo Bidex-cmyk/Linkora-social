@@ -30,6 +30,7 @@ const { isSimulationError, isSimulationSuccess } = rpc.Api;
 
 const DEFAULT_NETWORK = "Test SDF Network ; September 2015";
 const DEFAULT_TIMEOUT = 30;
+const MAX_BYTES = 64 * 1024; // 64KB max limit for Soroban host function byte arguments
 
 function scvAddress(value: string): xdr.ScVal {
   return nativeToScVal(value, { type: "address" });
@@ -102,6 +103,14 @@ function ensureGovParameter(parameter: GovParameter): void {
   if (!valid) {
     throw new InvalidInputError(
       `parameter must be one of: ${Object.values(GovParameter).join(", ")}.`
+    );
+  }
+}
+
+function ensureMaxBytes(value: Uint8Array, fieldName: string, maxBytes: number = MAX_BYTES): void {
+  if (value.length > maxBytes) {
+    throw new ValidationError(
+      `${fieldName} exceeds maximum allowed size of ${maxBytes} bytes (got ${value.length} bytes).`
     );
   }
 }
@@ -1385,6 +1394,8 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     windowEnd: number | bigint
   ): string {
     ensureNonEmptyString(oracleName, "oracleName");
+    ensureMaxBytes(reportCbor, "reportCbor");
+    ensureMaxBytes(signature, "signature");
     ensureAddress(creator, "creator");
     ensureInteger(windowStart, "windowStart", 0);
     ensureInteger(windowEnd, "windowEnd", 0);

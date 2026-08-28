@@ -1,5 +1,5 @@
 import { LinkoraClient } from "../client";
-import { InvalidInputError } from "../errors";
+import { InvalidInputError, ValidationError } from "../errors";
 
 const mockCall = jest.fn();
 const mockBuild = jest.fn();
@@ -235,5 +235,21 @@ describe("LinkoraClient write methods", () => {
     expect(() => client.govPropose("GVALID", "Unsupported" as never, 1, null)).toThrow(
       InvalidInputError
     );
+  });
+
+  it("rejects oversized byte arrays for verifyAnalyticsAttestation", () => {
+    const oversizedReportCbor = new Uint8Array(64 * 1024 + 1);
+    const validSignature = new Uint8Array(64).fill(0xab);
+
+    expect(() =>
+      client.verifyAnalyticsAttestation(
+        "default",
+        oversizedReportCbor,
+        validSignature,
+        "GCREATOR",
+        1000,
+        2000
+      )
+    ).toThrow(ValidationError);
   });
 });
