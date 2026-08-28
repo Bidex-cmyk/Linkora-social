@@ -2166,8 +2166,14 @@ impl LinkoraContract {
         require_with_error!(&env, post_ids.len() <= 50, "batch size must not exceed 50");
         Self::require_not_paused(&env);
 
+        let mut seen: Map<u64, bool> = Map::new(&env);
         for post_id in post_ids.iter() {
             require_with_error!(&env, post_id > 0, "post id must be positive");
+            if seen.contains_key(post_id) {
+                continue;
+            }
+            seen.set(post_id, true);
+
             let like_key = StorageKey::Like(post_id, user.clone());
             if !env.storage().persistent().has(&like_key) {
                 let post_key = StorageKey::Post(post_id);
@@ -3456,6 +3462,17 @@ impl LinkoraContract {
         validate_non_default_address(&env, "user", &user);
         validate_non_default_address(&env, "token", &token);
         validate_amount(&env, "rent amount", amount);
+
+        let profile: Profile = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Profile(user.clone()))
+            .unwrap_or_else(|| panic!("profile does not exist"));
+        require_with_error!(
+            &env,
+            token == profile.creator_token,
+            "token must match profile creator token"
+        );
 
         let rent_rate_bps = Self::get_rent_rate_bps(env.clone());
         require_with_error!(&env, rent_rate_bps > 0, "rent rate bps must be positive");
