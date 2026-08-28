@@ -450,6 +450,14 @@ export async function streamEvents(
             processBatch,
             signal
           );
+          // Advance the stream cursor to what the coordinator actually
+          // committed (never the requested gap boundary), so the next
+          // iteration's gap detection is based on durable progress and never
+          // re-flags — or skips past — ledgers that were never persisted.
+          const committed = config.backfillCoordinator.progress.lastCommittedLedger;
+          if (committed !== undefined) {
+            cursor = Math.max(cursor, committed);
+          }
         } else {
           // Legacy path: raw fetchRange with no depth limits.
           const backfilled = await fetchRange(

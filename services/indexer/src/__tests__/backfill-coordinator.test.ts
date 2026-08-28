@@ -113,6 +113,54 @@ describe("BackfillCoordinator — normal backfill", () => {
   });
 });
 
+describe("BackfillCoordinator — commit-aligned cursor", () => {
+  it("resumes from the durably committed ledger, not the requested batch boundary", async () => {
+    // Simulate a batch whose fetched events reach ledger 10, but whose
+    // processor only durably commits up to ledger 7 (e.g. a crash/partial
+    // commit past that point). The coordinator must resume from 7, not skip
+    // ahead to 11 just because ledger 10 was fetched/seen.
+    const config = makeConfig({ batchSize: 10 });
+    const allEvents = makeEvents(1, 20);
+    const fetchCalls: Array<[number, number]> = [];
+    const fetcher = async (from: number, to: number) => {
+      fetchCalls.push([from, to]);
+      return allEvents.filter((e) => e.ledger >= from && e.ledger <= to);
+    };
+
+    let firstBatch = true;
+    const processBatch = async (events: RawEvent[]) => {
+      if (firstBatch) {
+        firstBatch = false;
+        // Only the first 7 of the 10 fetched events actually committed.
+        return 7;
+      }
+      return events[events.length - 1].ledger;
+    };
+
+    const coordinator = new BackfillCoordinator(config, fetcher, noopSleep);
+    await coordinator.recoverGap(1, 20, processBatch, new AbortController().signal);
+
+    // The second fetch must re-cover ledgers 8-10 (never skipped), not start at 11.
+    expect(fetchCalls[0]).toEqual([1, 10]);
+    expect(fetchCalls[1]).toEqual([8, 17]);
+    expect(coordinator.status).toBe("healthy");
+    expect(coordinator.progress.lastCommittedLedger).toBe(20);
+  });
+
+  it("advances past an empty sub-range without ever calling processBatch", async () => {
+    const config = makeConfig({ batchSize: 5 });
+    const fetcher = async (): Promise<RawEvent[]> => []; // no events anywhere
+    const processBatch = jest.fn();
+
+    const coordinator = new BackfillCoordinator(config, fetcher, noopSleep);
+    const result = await coordinator.recoverGap(1, 10, processBatch, new AbortController().signal);
+
+    expect(result).toBe(true);
+    expect(processBatch).not.toHaveBeenCalled();
+    expect(coordinator.progress.lastCommittedLedger).toBe(10);
+  });
+});
+
 describe("BackfillCoordinator — large gap handling", () => {
   it("returns false and sets status=gap_too_large when gap > maxDepthLedgers", async () => {
     const config = makeConfig({ maxDepthLedgers: 100 });

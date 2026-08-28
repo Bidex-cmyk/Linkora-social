@@ -67,6 +67,13 @@ export interface IngestPipelineOptions {
   serializationRetryAttempts?: number;
   /** Injectable delay for deterministic retry tests. */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Invoked with the new cursor strictly AFTER the batch's transaction has
+   * committed. Used to publish commit-aligned metrics (e.g. the state root)
+   * that must never reflect a partially-applied or rolled-back batch. Never
+   * called when the transaction rolls back.
+   */
+  onCommit?: (cursor: number) => Promise<void> | void;
 }
 
 export interface BatchResult {
@@ -140,6 +147,7 @@ export class IngestPipeline {
   private readonly transactionIsolation: TransactionIsolation;
   private readonly serializationRetryAttempts: number;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly onCommit?: (cursor: number) => Promise<void> | void;
 
   constructor(pool: PgPoolLike, opts: IngestPipelineOptions) {
     this.pool = pool;
@@ -153,6 +161,7 @@ export class IngestPipeline {
     );
     this.sleep =
       opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    this.onCommit = opts.onCommit;
   }
 
   /** Read the last committed cursor for this stream (0 if none). */
@@ -247,6 +256,12 @@ export class IngestPipeline {
       // (4) Fan out only after the durable commit.
       for (const ev of events) {
         this.bus.publish(toBusEvent(ev));
+      }
+
+      // (5) Commit-aligned side effects (e.g. state root publication) run
+      // only once the batch is durably committed, never on rollback.
+      if (this.onCommit) {
+        await this.onCommit(newCursor);
       }
 
       return { committed: true, cursor: newCursor, inserted };

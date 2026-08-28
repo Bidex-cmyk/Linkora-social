@@ -32,6 +32,14 @@ export interface BackfillProgress {
   processedLedgers: number;
   totalLedgers: number;
   consecutiveFailures: number;
+  /**
+   * Highest ledger verified durably committed so far (the cursor returned by
+   * `processBatch` after its DB transaction commits) — never the highest
+   * ledger merely fetched/seen. A reconnecting caller should resume from
+   * here, not from the requested range boundary, so a crash before commit
+   * can never cause events to be skipped.
+   */
+  lastCommittedLedger?: number;
 }
 
 /** Fetches all events in the inclusive ledger range [from, to]. */
@@ -167,6 +175,10 @@ export class BackfillCoordinator {
     );
 
     let current = fromLedger;
+    // Highest ledger verified durably committed so far — distinct from
+    // `current`/`batchTo`, which only reflect what was requested/fetched.
+    let lastCommittedLedger = fromLedger - 1;
+
     while (current <= toLedger && !signal.aborted) {
       const batchTo = Math.min(current + this.config.batchSize - 1, toLedger);
 
@@ -176,16 +188,26 @@ export class BackfillCoordinator {
         if (signal.aborted) break;
 
         if (events.length > 0) {
-          await processBatch(events);
+          // processBatch (the ingest pipeline) resolves only once its DB
+          // transaction commits, returning the actual committed cursor. Trust
+          // that value — never the requested range — as the resume point, so
+          // a crash before commit can never skip events that were fetched
+          // but never durably persisted.
+          lastCommittedLedger = await processBatch(events);
+        } else {
+          // fetchRange scans the full closed range, so an empty result
+          // proves there is nothing to commit in [current, batchTo].
+          lastCommittedLedger = batchTo;
         }
 
         // Reset consecutive failure counter on success.
         this._progress.consecutiveFailures = 0;
 
-        const processedSoFar = batchTo - fromLedger + 1;
+        const processedSoFar = lastCommittedLedger - fromLedger + 1;
         this._progress = {
           ...this._progress,
           processedLedgers: processedSoFar,
+          lastCommittedLedger,
           consecutiveFailures: 0,
         };
 
@@ -236,7 +258,10 @@ export class BackfillCoordinator {
         continue;
       }
 
-      current = batchTo + 1;
+      // Resume from the last durably committed ledger, not the requested
+      // batch boundary, so a future reconnect never skips events that were
+      // fetched in this batch but never actually persisted.
+      current = lastCommittedLedger + 1;
 
       // Rate-limit delay between batches (skip on the last one or when aborted).
       if (current <= toLedger && !signal.aborted && this.config.rateLimitMs > 0) {
