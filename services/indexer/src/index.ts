@@ -369,9 +369,11 @@ async function main(): Promise<void> {
     // Publish the state root only after this batch's transaction has
     // committed, so the stored root always reflects a fully-applied ledger
     // rather than a partially-applied one.
-    onCommit: (cursor) =>
-      saveStateRoot(pgPool, cursor).catch((err) =>
-        logger.warn({ err, ledgerSequence: cursor }, "Failed to publish state root after commit")
+    onCommit: (cursor): Promise<void> =>
+      saveStateRoot(pgPool, cursor).then(
+        () => {},
+        (err) =>
+          logger.warn({ err, ledgerSequence: cursor }, "Failed to publish state root after commit")
       ),
   });
 
