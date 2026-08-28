@@ -266,6 +266,23 @@ describe("LinkoraClient read methods", () => {
       notFound();
       expect(await client.getTreasury()).toBeNull();
     });
+    it("rethrows non-NotFound errors", async () => {
+      simError("fetch failed");
+      await expect(client.getTreasury()).rejects.toThrow("fetch failed");
+    });
+  });
+
+  describe("getDmKey", () => {
+    it("returns the DM key", async () => {
+      success(new Uint8Array([1, 2, 3]));
+      const key = await client.getDmKey("GUSER");
+      expect(key).toEqual(new Uint8Array([1, 2, 3]));
+    });
+
+    it("rethrows non-NotFound errors", async () => {
+      simError("network timeout");
+      await expect(client.getDmKey("GUSER")).rejects.toThrow("network timeout");
+    });
   });
 
   describe("getTipCooldownWindow", () => {

@@ -688,8 +688,9 @@ export class LinkoraClient extends GeneratedLinkoraClient {
   async getTreasury(): Promise<string | null> {
     try {
       return await super.getTreasury();
-    } catch {
-      return null;
+    } catch (e) {
+      if (e instanceof NotFoundError) return null;
+      throw e;
     }
   }
 
@@ -756,8 +757,9 @@ export class LinkoraClient extends GeneratedLinkoraClient {
   async getDmKey(address: string): Promise<Uint8Array | null> {
     try {
       return await super.getDmKey(address);
-    } catch {
-      return null;
+    } catch (e) {
+      if (e instanceof NotFoundError) return null;
+      throw e;
     }
   }
 
@@ -1549,10 +1551,10 @@ export class LinkoraClient extends GeneratedLinkoraClient {
    * console.log("Deploy Op:", deployOp, "Profile Op:", profileOp);
    * ```
    */
-  setProfileWithNewToken(
+  async setProfileWithNewToken(
     params: SetProfileWithNewTokenParams,
     sourceAccount?: Account
-  ): [string, string] {
+  ): Promise<[string, string]> {
     if (!this.tokenFactoryId) {
       throw new ValidationError(
         "tokenFactoryId must be set in ClientConfig to use setProfileWithNewToken",
@@ -1561,6 +1563,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
         }
       );
     }
+
     const deployTx = this.deployCreatorToken(
       {
         deployer: params.user,
@@ -1568,10 +1571,17 @@ export class LinkoraClient extends GeneratedLinkoraClient {
       },
       sourceAccount
     );
-    // NOTE: the token address used here is a placeholder; callers should
-    // first simulate deployCreatorToken to get the real token address, then
-    // call setProfile(user, username, tokenAddress) directly.
-    const profileTx = this.setProfile(params.user, params.username, params.user);
+
+    const tokenAddress = await this.simulateDeployCreatorToken({
+      deployer: params.user,
+      ...params.tokenParams,
+    });
+
+    if (!tokenAddress) {
+      throw new Error("Failed to determine the deployed creator token contract ID.");
+    }
+
+    const profileTx = this.setProfile(params.user, params.username, tokenAddress);
     return [deployTx, profileTx];
   }
 
