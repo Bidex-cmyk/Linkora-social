@@ -105,6 +105,8 @@ export interface TransactionQueueConfig {
   pollIntervalMs?: number;
   /** Maximum number of poll attempts before timing out (default 30). */
   maxPollAttempts?: number;
+  /** Timeout in ms for individual RPC calls (default 10000). */
+  rpcTimeoutMs?: number;
   /**
    * Maximum wall-clock time in milliseconds to spend on a single step
    * (signing + simulation + submission + confirmation). When exceeded the step
@@ -162,6 +164,7 @@ export class TransactionQueue {
   private readonly rpc: RpcClient;
   private readonly pollIntervalMs: number;
   private readonly maxPollAttempts: number;
+  private readonly rpcTimeoutMs: number;
   private readonly defaultStepTimeoutMs: number | undefined;
   private readonly defaultDryRun: boolean;
   private readonly retryConfig: RetryConfig;
@@ -177,6 +180,7 @@ export class TransactionQueue {
     this.rpc = config.rpc;
     this.pollIntervalMs = config.pollIntervalMs ?? 2000;
     this.maxPollAttempts = config.maxPollAttempts ?? 30;
+    this.rpcTimeoutMs = config.rpcTimeoutMs ?? 10000;
     this.defaultStepTimeoutMs = config.stepTimeoutMs;
     this.defaultDryRun = config.dryRun ?? false;
     this.retryConfig = resolveRetryConfig(config.retry);
@@ -372,7 +376,13 @@ export class TransactionQueue {
     try {
       const result = await withRetry(
         async () => {
-          const r = await this.rpc.sendTransaction(signedXdr);
+          const r = await this.withTimeout(
+            this.rpc.sendTransaction(signedXdr),
+            this.rpcTimeoutMs,
+            async () => {
+              throw new NetworkError(`sendTransaction timed out after ${this.rpcTimeoutMs}ms`);
+            }
+          );
           if (r.status === "ERROR") {
             throw new NetworkError(r.errorResultXdr ?? "sendTransaction returned ERROR", {
               step: i,
@@ -427,7 +437,13 @@ export class TransactionQueue {
 
   private async pollConfirmation(hash: string): Promise<void> {
     for (let attempt = 0; attempt < this.maxPollAttempts; attempt++) {
-      const tx = await this.rpc.getTransaction(hash);
+      const tx = await this.withTimeout(
+        this.rpc.getTransaction(hash),
+        this.rpcTimeoutMs,
+        async () => {
+          throw new NetworkError(`getTransaction timed out after ${this.rpcTimeoutMs}ms`);
+        }
+      );
       if (tx.status === "SUCCESS") return;
       if (tx.status === "FAILED") {
         throw new NetworkError(tx.errorResultXdr ?? "transaction FAILED", { hash });
@@ -458,17 +474,17 @@ export class TransactionQueue {
    * Race `work` against a deadline. If the deadline fires first, `onTimeout`
    * is called (which should throw) and its rejection propagates.
    */
-  private async withTimeout(
-    work: Promise<void>,
+  private async withTimeout<T>(
+    work: Promise<T>,
     timeoutMs: number,
     onTimeout: () => Promise<never>
-  ): Promise<void> {
+  ): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_, reject) => {
       timer = setTimeout(() => onTimeout().catch(reject), timeoutMs);
     });
     try {
-      await Promise.race([work, deadline]);
+      return await Promise.race([work, deadline]);
     } finally {
       clearTimeout(timer);
     }
