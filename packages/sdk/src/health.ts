@@ -72,10 +72,22 @@ export class ConnectionHealthMonitor {
     this.pingTimeoutMs = config.pingTimeoutMs ?? 10_000;
   }
 
-  /** Register a callback invoked whenever connection status changes. Starts the loop if not already running. */
-  onConnectionStatusChange(callback: ConnectionStatusCallback): void {
-    this.listeners.push(callback);
+  /**
+   * Register a callback invoked whenever connection status changes. Starts the loop if not
+   * already running. Re-registering the same callback reference is a no-op (it will not be
+   * invoked twice per status change), so it is safe to call this repeatedly with a stable
+   * callback — e.g. from a React effect that re-runs on every render.
+   *
+   * @returns An unsubscribe function that removes this listener.
+   */
+  onConnectionStatusChange(callback: ConnectionStatusCallback): () => void {
+    if (!this.listeners.includes(callback)) {
+      this.listeners.push(callback);
+    }
     this.start();
+    return () => {
+      this.listeners = this.listeners.filter((cb) => cb !== callback);
+    };
   }
 
   /** Perform a single health check ping against the RPC endpoint. */

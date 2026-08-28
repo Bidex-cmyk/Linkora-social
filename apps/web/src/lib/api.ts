@@ -1,5 +1,9 @@
+import { LinkoraClient } from "../../../../packages/sdk/src/client";
+
 const INDEXER_URL =
   process.env.NEXT_PUBLIC_INDEXER_URL || "http://localhost:3001";
+const CONTRACT_ID = process.env.NEXT_PUBLIC_CONTRACT_ID || "CDUMMY";
+const RPC_URL = process.env.NEXT_PUBLIC_RPC_URL || "https://soroban-testnet.stellar.org";
 
 export interface PoolData {
   id: string;
@@ -28,5 +32,20 @@ export async function fetchPools(): Promise<PoolData[]> {
     }));
   } catch {
     return [];
+  }
+}
+
+/**
+ * Check whether the contract is currently paused. While paused, write
+ * operations (compose/tip/follow) will fail simulation.
+ * Fails open (returns false) if the RPC can't be reached, so a transient
+ * network error doesn't falsely block the whole app.
+ */
+export async function fetchIsPaused(): Promise<boolean> {
+  try {
+    const client = new LinkoraClient({ contractId: CONTRACT_ID, rpcUrl: RPC_URL });
+    return await client.isPaused();
+  } catch {
+    return false;
   }
 }

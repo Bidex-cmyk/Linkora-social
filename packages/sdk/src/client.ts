@@ -187,8 +187,11 @@ export class LinkoraClient extends GeneratedLinkoraClient {
   /**
    * Register a callback for connection status changes ("connected" | "disconnected").
    * Starts the periodic health-check loop on first call if not already running.
+   * Re-registering the same callback reference is a no-op, so this is safe to call
+   * repeatedly with a stable callback (e.g. from a React effect on every render).
    *
    * @param callback Function invoked when the connection state transitions.
+   * @returns An unsubscribe function that removes this listener.
    *
    * @example
    * ```ts
@@ -201,9 +204,8 @@ export class LinkoraClient extends GeneratedLinkoraClient {
    * });
    * ```
    */
-  onConnectionStatusChange(callback: ConnectionStatusCallback): void {
-    this._healthMonitor.onConnectionStatusChange(callback);
-    this._healthMonitor.start();
+  onConnectionStatusChange(callback: ConnectionStatusCallback): () => void {
+    return this._healthMonitor.onConnectionStatusChange(callback);
   }
 
   /**
@@ -611,6 +613,25 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Check whether the contract is currently paused. While paused, all state-mutating
+   * calls (follow, post, tip, etc.) will fail simulation.
+   *
+   * @returns True if the contract is paused, false otherwise.
+   *
+   * @example
+   * ```ts
+   * if (await client.isPaused()) {
+   *   console.warn("Linkora is temporarily paused.");
+   * }
+   * ```
+   */
+  async isPaused(): Promise<boolean> {
+    const retval = await this.simulateCallOnContract(this._contractId, "is_paused");
+    if (!retval) return false;
+    return Boolean(scValToNative(retval));
   }
 
   /**
