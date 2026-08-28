@@ -76,13 +76,16 @@ export function useBlock(): UseBlockReturn {
       try {
         await submitTx(`block_user:${currentUserAddress}:${address}`);
         setBlocked((prev) => [...prev, { address, reason: "Blocked" }]);
+        // Re-fetch from the indexer so the list reflects the latest server
+        // state instead of trusting our local snapshot.
+        await loadBlocked();
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to block user. Please try again.");
       } finally {
         setBlocking(null);
       }
     },
-    [currentUserAddress, connected, submitTx, showError]
+    [currentUserAddress, connected, submitTx, showError, loadBlocked]
   );
 
   const unblockUser = useCallback(
@@ -98,13 +101,16 @@ export function useBlock(): UseBlockReturn {
       try {
         await submitTx(`unblock_user:${currentUserAddress}:${address}`);
         setBlocked((prev) => prev.filter((item) => item.address !== address));
+        // Re-fetch from the indexer so the list reflects the latest server
+        // state instead of trusting our local snapshot.
+        await loadBlocked();
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to unblock user. Please try again.");
       } finally {
         setBlocking(null);
       }
     },
-    [currentUserAddress, connected, submitTx, showError]
+    [currentUserAddress, connected, submitTx, showError, loadBlocked]
   );
 
   const refresh = useCallback(() => {
