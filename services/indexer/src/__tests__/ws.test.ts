@@ -10,7 +10,8 @@ import http from "http";
 import { AddressInfo } from "net";
 import WebSocket from "ws";
 import { EventBus, BusEvent } from "../bus";
-import { attachWebSocketServer, WsHandle } from "../ws";
+import { attachWebSocketServer, WsHandle, WsServerOptions } from "../ws";
+import { TokenBucket } from "../ratelimit";
 
 function busEvent(type: string, ledger: number, index = 0): BusEvent {
   return {
@@ -38,10 +39,13 @@ interface Harness {
   port: number;
 }
 
-async function startHarness(heartbeatMs = 15_000): Promise<Harness> {
+async function startHarness(
+  heartbeatMs = 15_000,
+  rateLimit?: WsServerOptions["rateLimit"]
+): Promise<Harness> {
   const bus = new EventBus();
   const server = http.createServer();
-  const handle = attachWebSocketServer(server, bus, { path: "/ws", heartbeatMs });
+  const handle = attachWebSocketServer(server, bus, { path: "/ws", heartbeatMs, rateLimit });
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const port = (server.address() as AddressInfo).port;
   return { server, handle, bus, port };
@@ -179,6 +183,50 @@ describe("WebSocket fanout", () => {
     client.close();
     await waitFor(() => h.handle.clientCount() === 0);
     expect(h.handle.clientCount()).toBe(0);
+  });
+
+  it("throttles then disconnects a connection flooding inbound frames", async () => {
+    // burst=3 means the first 3 frames are free; a near-zero refill rate keeps
+    // the bucket deterministically drained across the burst regardless of
+    // real-world scheduling jitter between sends.
+    h = await startHarness(15_000, {
+      createBucket: () => new TokenBucket({ ratePerSec: 1, burst: 3 }),
+      maxViolations: 2,
+    });
+    const client = await connect(h.port);
+    await waitFor(() => h.handle.clientCount() === 1);
+
+    const acked: string[] = [];
+    const errors: string[] = [];
+    let closeCode: number | undefined;
+    let closeReason: string | undefined;
+
+    client.on("message", (data) => {
+      const frame = JSON.parse(data.toString());
+      if (frame.type === "subscribed") acked.push(frame.type);
+      if (frame.type === "error") errors.push(frame.payload.message);
+    });
+    const closed = new Promise<void>((resolve) => {
+      client.on("close", (code, reason) => {
+        closeCode = code;
+        closeReason = reason.toString();
+        resolve();
+      });
+    });
+
+    // Flood well past the burst + violation budget: 3 free + 2 tolerated
+    // over-budget frames + 1 that crosses the threshold = 6 to trigger a close.
+    for (let i = 0; i < 10; i++) {
+      client.send(JSON.stringify({ action: "subscribe", types: ["Follow"] }));
+    }
+
+    await closed;
+    expect(closeCode).toBe(1008);
+    expect(closeReason).toBe("rate limit exceeded");
+    expect(acked.length).toBe(3);
+    expect(errors.length).toBeGreaterThanOrEqual(2);
+    expect(errors.every((m) => m.includes("rate limit exceeded"))).toBe(true);
+    await waitFor(() => h.handle.clientCount() === 0);
   });
 
   it("keeps a responsive client alive across heartbeats", async () => {

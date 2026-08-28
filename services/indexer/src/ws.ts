@@ -15,18 +15,41 @@
 import { Server as HttpServer } from "http";
 import { WebSocketServer, WebSocket, RawData } from "ws";
 import { EventBus, BusEvent, ALL_EVENTS } from "./bus";
+import { TokenBucket, wsRateLimiterFromEnv } from "./ratelimit";
+
+/** WS close code for a connection dropped for violating server policy (RFC 6455). */
+const CLOSE_POLICY_VIOLATION = 1008;
+
+/** Consecutive over-budget frames tolerated before the connection is closed. */
+const DEFAULT_MAX_RATE_VIOLATIONS = 5;
 
 export interface WsServerOptions {
   /** URL path to accept WebSocket upgrades on. Default "/ws". */
   path?: string;
   /** Heartbeat interval in milliseconds. Default 15000. */
   heartbeatMs?: number;
+  /**
+   * Per-connection inbound message budget. A frame received with an empty
+   * bucket is dropped (with an error frame sent back) rather than processed;
+   * a connection that keeps flooding past `maxViolations` consecutive
+   * over-budget frames is disconnected with close code 1008.
+   */
+  rateLimit?: {
+    /** Builds a fresh token bucket for each new connection. Defaults to `wsRateLimiterFromEnv()`. */
+    createBucket?: () => TokenBucket;
+    /** Default 5. */
+    maxViolations?: number;
+  };
 }
 
 interface ClientState {
   isAlive: boolean;
   /** Event types this client wants; null means "all". */
   types: Set<string> | null;
+  /** Per-connection inbound message budget. */
+  bucket: TokenBucket;
+  /** Consecutive frames received while the bucket was empty. */
+  rateViolations: number;
 }
 
 export interface WsHandle {
@@ -53,8 +76,16 @@ export function attachWebSocketServer(
   const wss = new WebSocketServer({ server: httpServer, path });
   const clients = new Map<WebSocket, ClientState>();
 
+  const createBucket = opts.rateLimit?.createBucket ?? wsRateLimiterFromEnv;
+  const maxRateViolations = opts.rateLimit?.maxViolations ?? DEFAULT_MAX_RATE_VIOLATIONS;
+
   wss.on("connection", (ws: WebSocket) => {
-    const state: ClientState = { isAlive: true, types: null };
+    const state: ClientState = {
+      isAlive: true,
+      types: null,
+      bucket: createBucket(),
+      rateViolations: 0,
+    };
     clients.set(ws, state);
 
     ws.on("pong", () => {
@@ -62,6 +93,16 @@ export function attachWebSocketServer(
     });
 
     ws.on("message", (raw: RawData) => {
+      if (!state.bucket.tryRemove()) {
+        state.rateViolations += 1;
+        if (state.rateViolations > maxRateViolations) {
+          ws.close(CLOSE_POLICY_VIOLATION, "rate limit exceeded");
+          return;
+        }
+        sendError(ws, "rate limit exceeded, message dropped");
+        return;
+      }
+      state.rateViolations = 0;
       handleControlFrame(ws, state, raw);
     });
 

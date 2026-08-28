@@ -99,3 +99,15 @@ export function rateLimiterFromEnv(env: NodeJS.ProcessEnv = process.env): TokenB
   const burst = env.RPC_RATE_LIMIT_BURST ? Number(env.RPC_RATE_LIMIT_BURST) : undefined;
   return new TokenBucket({ ratePerSec, burst });
 }
+
+/**
+ * Build a token bucket from env for limiting inbound frames on a single
+ * WebSocket connection, with the same semantics as {@link rateLimiterFromEnv}.
+ *   WS_RATE_LIMIT_PER_SEC  — sustained rate (default 5)
+ *   WS_RATE_LIMIT_BURST    — burst capacity (default = rate)
+ */
+export function wsRateLimiterFromEnv(env: NodeJS.ProcessEnv = process.env): TokenBucket {
+  const ratePerSec = env.WS_RATE_LIMIT_PER_SEC ? Number(env.WS_RATE_LIMIT_PER_SEC) : 5;
+  const burst = env.WS_RATE_LIMIT_BURST ? Number(env.WS_RATE_LIMIT_BURST) : undefined;
+  return new TokenBucket({ ratePerSec, burst });
+}
