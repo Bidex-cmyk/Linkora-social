@@ -18,7 +18,7 @@
  */
 
 import http from "http";
-import { Pool } from "pg";
+import { InstrumentedPool } from "./instrumented-pool";
 import { streamEvents, backfillStartupGap, RawEvent, BatchProcessor } from "./stream";
 import { IngestPipeline, IngestEvent } from "./pipeline";
 import { bus } from "./bus";
@@ -57,7 +57,7 @@ const LOCK_TIMEOUT_MS = parseInt(process.env.LOCK_TIMEOUT_MS || "10000", 10);
 const SLOW_QUERY_THRESHOLD_MS = parseInt(process.env.SLOW_QUERY_THRESHOLD_MS || "5000", 10);
 const POOL_STATS_LOG_INTERVAL_MS = parseInt(process.env.DB_POOL_STATS_INTERVAL_MS || "60000", 10);
 
-const pgPool = new Pool({
+const pgPool = new InstrumentedPool(SLOW_QUERY_THRESHOLD_MS, {
   connectionString: DATABASE_URL,
   statement_timeout: STATEMENT_TIMEOUT_MS,
   lock_timeout: LOCK_TIMEOUT_MS,
@@ -89,38 +89,6 @@ const poolStatsTimer = setInterval(() => {
   );
 }, POOL_STATS_LOG_INTERVAL_MS);
 poolStatsTimer.unref();
-
-// Wrap pool.query to log slow queries
-const originalQuery = pgPool.query.bind(pgPool);
-pgPool.query = function (text: string | any, values?: any[] | any, callback?: any) {
-  const startTime = Date.now();
-  const wrappedCallback = (err: Error | null, result: any) => {
-    const duration = Date.now() - startTime;
-    if (duration > SLOW_QUERY_THRESHOLD_MS) {
-      console.warn(
-        `[slow-query] ${duration}ms: ${typeof text === "string" ? text.substring(0, 100) : "prepared statement"}`
-      );
-    }
-    if (callback) callback(err, result);
-  };
-
-  if (typeof values === "function") {
-    return originalQuery(text, wrappedCallback);
-  } else if (callback) {
-    return originalQuery(text, values, wrappedCallback);
-  } else {
-    const promise = originalQuery(text, values);
-    return promise.then((result) => {
-      const duration = Date.now() - startTime;
-      if (duration > SLOW_QUERY_THRESHOLD_MS) {
-        console.warn(
-          `[slow-query] ${duration}ms: ${typeof text === "string" ? text.substring(0, 100) : "prepared statement"}`
-        );
-      }
-      return result;
-    });
-  }
-} as any;
 
 const notificationService = new NotificationService({
   deviceTokenStore: new PostgresDeviceTokenStore(pgPool),
