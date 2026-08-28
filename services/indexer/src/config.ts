@@ -155,6 +155,15 @@ export interface BackfillConfig {
   alertThreshold: number;
 
   /**
+   * Number of ledgers the RPC's latest closed ledger must advance past a
+   * suspected hole before the gap is declared durable. Benign RPC lag (a
+   * ledger that is not yet finalised) is reported as "still catching up"
+   * instead of tripping the alert until the RPC has moved at least this many
+   * ledgers beyond the hole. Default: 200.
+   */
+  gapConfirmationLedgers: number;
+
+  /**
    * Stop backfilling and require manual intervention after this many
    * consecutive batch failures (circuit-breaker threshold).
    */
@@ -206,6 +215,7 @@ export function loadConfig(): IndexerConfig {
       batchSize: optionalInt("BACKFILL_BATCH_SIZE", 100),
       rateLimitMs: optionalNonNegInt("BACKFILL_RATE_LIMIT_MS", 100),
       alertThreshold: optionalInt("BACKFILL_ALERT_THRESHOLD", 5_000),
+      gapConfirmationLedgers: optionalInt("BACKFILL_GAP_CONFIRMATION_LEDGERS", 200),
       circuitBreakerMaxFailures: optionalInt("BACKFILL_CIRCUIT_BREAKER_MAX_FAILURES", 5),
     },
 

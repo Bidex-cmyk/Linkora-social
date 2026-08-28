@@ -107,8 +107,9 @@ describe("ensureNextPartition", () => {
  * a single dropOldPartitions call over the given set of partitions.
  *
  * Query order per dropOldPartitions call:
- *   1. server_version_num  (supportsDetachConcurrently)
- *   2. listPartitions       (pg_inherits join)
+ *   1. listPartitions       (pg_inherits join — cutoff anchored to the newest
+ *                            present partition, so partitions are listed first)
+ *   2. server_version_num   (supportsDetachConcurrently)
  *   3–N. isFullyProcessed   (one per eligible partition)
  *   N+1…. DETACH / DROP     (one per dropped partition)
  */
@@ -119,15 +120,15 @@ function poolForDrop(opts: {
   const pool = new FakePool();
   const pgVersion = opts.pgVersion ?? 160000;
 
-  // 1. server_version_num
-  pool.onQuery(() => [{ server_version_num: String(pgVersion) }]);
-
-  // 2. listPartitions
+  // 1. listPartitions
   pool.onQuery(() =>
     opts.partitions.map((p) => ({
       relname: `raw_events_p${p.lo}_${p.hi}`,
     }))
   );
+
+  // 2. server_version_num
+  pool.onQuery(() => [{ server_version_num: String(pgVersion) }]);
 
   // 3–N. isFullyProcessed — only called for partitions that pass the cutoff check
   for (const p of opts.partitions) {
@@ -148,12 +149,78 @@ function poolForDrop(opts: {
 describe("dropOldPartitions", () => {
   it("returns empty array when retention window has not been reached", async () => {
     const pool = new FakePool();
+    // listPartitions — a partition exists but the whole span is inside the
+    // retention window (retentionHead ≤ retentionLedgers → cutoff before epoch).
+    pool.onQuery(() => [{ relname: "raw_events_p0_1000000" }]);
     pool.onQuery(() => [{ server_version_num: "160000" }]);
-    pool.onQuery(() => []);
+    pool.onQuery(() => [{ has_unprocessed: false }]);
 
-    // currentLedger < retentionLedgers → cutoff ≤ 0
+    // currentLedger < retentionLedgers, so no cutoff can be derived → no drops
     const dropped = await dropOldPartitions(1_000n, BASE_CFG, pool as never);
     expect(dropped).toHaveLength(0);
+  });
+
+  it("returns empty array with no error spam on an empty partition set", async () => {
+    const pool = new FakePool();
+    pool.onQuery(() => []); // listPartitions → none
+
+    const dropped = await dropOldPartitions(10_000_000n, BASE_CFG, pool as never);
+    expect(dropped).toHaveLength(0);
+    // Only the partition listing should have been issued — no DETACH/DROP DDL.
+    expect(pool.queries.some((q) => q.includes("DETACH"))).toBe(false);
+    expect(pool.queries.some((q) => q.includes("DROP TABLE"))).toBe(false);
+  });
+
+  it("does not underflow when all partitions are older than the retention window", async () => {
+    const pool = new FakePool();
+    // A tiny (pre-epoch-style) partition set: data head ≈ 1M ledgers, which is
+    // smaller than the 4M retention window → cutoff would precede partition 0.
+    pool.onQuery(() => [{ relname: "raw_events_p0_1000000" }]);
+    pool.onQuery(() => [{ server_version_num: "160000" }]);
+    pool.onQuery(() => [{ has_unprocessed: false }]);
+
+    const dropped = await dropOldPartitions(500_000n, BASE_CFG, pool as never);
+    expect(dropped).toHaveLength(0);
+    // No DDL should have been attempted.
+    expect(pool.queries.some((q) => q.includes("DETACH"))).toBe(false);
+    expect(pool.queries.some((q) => q.includes("DROP TABLE"))).toBe(false);
+  });
+
+  it("converges when partitions are older than a naive cursor-based cutoff (migration replay)", async () => {
+    // Cursor lags far behind the migrated partitions (migration 012 replay):
+    // an old cursor-only cutoff would compute a negative value and drop nothing.
+    // Anchoring the cutoff to max(cursor, newestPartitionHi) keeps cleaning.
+    const pool = new FakePool();
+
+    // listPartitions — ten 1M-ledger buckets from ledger 0 to 10M.
+    const names = Array.from(
+      { length: 10 },
+      (_, i) => `raw_events_p${i * 1_000_000}_${(i + 1) * 1_000_000}`
+    );
+    pool.onQuery(() => names.map((relname) => ({ relname })));
+    // supportsDetachConcurrently
+    pool.onQuery(() => [{ server_version_num: "160000" }]);
+    // isFullyProcessed — only for the 4 partitions past the cutoff (hi < 5M)
+    for (let i = 0; i < 4; i++) {
+      pool.onQuery(() => [{ has_unprocessed: false }]);
+    }
+    // DETACH + DROP for each of the 4 dropped partitions
+    for (let i = 0; i < 4; i++) {
+      pool.onQuery(() => []);
+      pool.onQuery(() => []);
+    }
+
+    // Cursor = 10_000 is far behind the 10M ledger head of the migrated data.
+    const dropped = await dropOldPartitions(10_000n, BASE_CFG, pool as never);
+
+    // retentionHead = max(10_000, 10_000_000) → cutoff = 6_000_000.
+    // Partitions with hi + partitionSize < 6_000_000 (hi < 5_000_000) drop.
+    expect(dropped).toEqual([
+      "raw_events_p0_1000000",
+      "raw_events_p1000000_2000000",
+      "raw_events_p2000000_3000000",
+      "raw_events_p3000000_4000000",
+    ]);
   });
 
   it("does not drop partitions still within the retention window", async () => {
@@ -170,10 +237,10 @@ describe("dropOldPartitions", () => {
 
   it("drops a fully-processed partition past the retention cutoff", async () => {
     const pool = new FakePool();
-    // server_version_num
-    pool.onQuery(() => [{ server_version_num: "160000" }]);
     // listPartitions — one old, fully-processed partition
     pool.onQuery(() => [{ relname: "raw_events_p0_1000000" }]);
+    // server_version_num
+    pool.onQuery(() => [{ server_version_num: "160000" }]);
     // isFullyProcessed → all processed
     pool.onQuery(() => [{ has_unprocessed: false }]);
     // DETACH PARTITION … CONCURRENTLY
@@ -192,8 +259,8 @@ describe("dropOldPartitions", () => {
 
   it("skips a partition that has unprocessed rows even if past the cutoff", async () => {
     const pool = new FakePool();
-    pool.onQuery(() => [{ server_version_num: "160000" }]);
     pool.onQuery(() => [{ relname: "raw_events_p0_1000000" }]);
+    pool.onQuery(() => [{ server_version_num: "160000" }]);
     // has_unprocessed = true → not fully processed
     pool.onQuery(() => [{ has_unprocessed: true }]);
 
@@ -203,8 +270,8 @@ describe("dropOldPartitions", () => {
 
   it("only detaches (no DROP) when archiveOnly is true", async () => {
     const pool = new FakePool();
-    pool.onQuery(() => [{ server_version_num: "160000" }]);
     pool.onQuery(() => [{ relname: "raw_events_p0_1000000" }]);
+    pool.onQuery(() => [{ server_version_num: "160000" }]);
     pool.onQuery(() => [{ has_unprocessed: false }]);
     pool.onQuery(() => []); // DETACH
 
@@ -239,16 +306,18 @@ describe("RawEventsRetentionManager.runOnce", () => {
     pool.onQuery(() => [{ is_partitioned: true }]);
     // to_regclass (ensureNextPartition) — bucket exists
     pool.onQuery(() => [{ exists: true }]);
-    // server_version_num (dropOldPartitions)
-    pool.onQuery(() => [{ server_version_num: "160000" }]);
-    // listPartitions — no old partitions
+    // listPartitions (dropOldPartitions) — no old partitions
     pool.onQuery(() => []);
 
     const mgr = new RawEventsRetentionManager(pool as never, BASE_CFG);
     await mgr.runOnce(5_000_000n);
 
-    // Should have issued at least the partitioned check + to_regclass + version + list
-    expect(pool.queries.length).toBeGreaterThanOrEqual(4);
+    // Partitioned check + partition listing must both have been issued, and
+    // with no partitions present retention terminates cleanly (no DDL).
+    expect(pool.queries.length).toBeGreaterThanOrEqual(2);
+    expect(pool.queries.length).toBeLessThanOrEqual(3);
+    expect(pool.queries[0]).toContain("relkind = 'p'");
+    expect(pool.queries.some((q) => q.includes("pg_inherits"))).toBe(true);
   });
 });
 

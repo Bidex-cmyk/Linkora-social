@@ -12,6 +12,13 @@
  *   - `GapResult.exceedsMaxDepth` is set to `true`.
  *   - The caller MUST NOT attempt an automatic backfill; instead it should
  *     surface the alert and require manual intervention.
+ *
+ * Benign RPC lag is handled by the gap confirmation window: when the caller
+ * supplies the RPC's latest considered ledger and `gapConfirmationLedgers` is
+ * configured, a hole is only declared durable once the RPC has advanced at
+ * least that many ledgers past it. Until then `GapResult.stillCatchingUp` is
+ * set and no alert is emitted — the missing ledgers may simply not be
+ * finalised yet.
  */
 
 import { BackfillConfig } from "../config";
@@ -30,22 +37,36 @@ export interface GapResult {
    * An alert has already been emitted; the gap MUST NOT be auto-backfilled.
    */
   exceedsMaxDepth?: boolean;
+  /**
+   * True when a potential hole was observed but the RPC's latest ledger has
+   * not yet advanced `gapConfirmationLedgers` past it — the ledgers may simply
+   * not be finalised yet. `hasGap` is `false` in this state; callers MUST NOT
+   * alert or backfill. Re-invoke the check once the RPC advances further to
+   * allow a durable gap to be declared.
+   */
+  stillCatchingUp?: boolean;
 }
 
 const NO_GAP: GapResult = { hasGap: false };
 
 /**
  * Detect a gap between the last processed cursor and the first event of a new
- * batch, enforcing backfill depth limits from `config`.
+ * batch, enforcing depth limits from `config`.
  *
  * @param batchFirstLedger  ledger_sequence of the first event in the batch
  * @param lastCursor        last ledger we have fully processed (0 = nothing yet)
  * @param config            backfill configuration (depth limits / alerting thresholds)
+ * @param latestLedger      the RPC's latest considered (closed) ledger. When
+ *                          provided, a hole is not declared durable until the
+ *                          RPC has advanced at least `gapConfirmationLedgers`
+ *                          past it, so benign, sub-finalisation RPC lag does
+ *                          not trip the alert.
  */
 export function detectGap(
   batchFirstLedger: number | undefined,
   lastCursor: number,
-  config?: Pick<BackfillConfig, "maxDepthLedgers" | "alertThreshold">
+  config?: Pick<BackfillConfig, "maxDepthLedgers" | "alertThreshold" | "gapConfirmationLedgers">,
+  latestLedger?: number
 ): GapResult {
   // Empty batch: nothing to compare.
   if (batchFirstLedger === undefined) return NO_GAP;
@@ -62,6 +83,18 @@ export function detectGap(
   const fromLedger = expected;
   const toLedger = batchFirstLedger - 1;
   const gapSize = toLedger - fromLedger + 1;
+
+  const confirmationLedgers = config?.gapConfirmationLedgers ?? 0;
+
+  // Confirm the hole is durable before treating it as a real gap: the RPC's
+  // latest considered ledger must have advanced at least `gapConfirmationLedgers`
+  // past it. Until then the missing ledgers may simply not be finalised yet —
+  // report "still catching up" instead of alerting on benign lag.
+  if (latestLedger !== undefined && confirmationLedgers > 0) {
+    if (latestLedger < toLedger + confirmationLedgers) {
+      return { hasGap: false, stillCatchingUp: true, fromLedger, toLedger, gapSize };
+    }
+  }
 
   const maxDepth = config?.maxDepthLedgers ?? Infinity;
   const alertThreshold = config?.alertThreshold ?? Infinity;
@@ -85,8 +118,7 @@ export function detectGap(
     console.error(
       JSON.stringify({
         metric: "backfill_gap_too_large",
-        message:
-          "Gap exceeds maximum backfill depth. Manual intervention required.",
+        message: "Gap exceeds maximum backfill depth. Manual intervention required.",
         fromLedger,
         toLedger,
         gapSize,

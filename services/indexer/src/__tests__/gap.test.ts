@@ -42,4 +42,10 @@ describe("detectGap", () => {
   it("reports no gap before the first batch (cursor 0)", () => {
     expect(detectGap(500000, 0)).toEqual({ hasGap: false });
   });
+
+  it("reports stillCatchingUp when the RPC has not advanced past the hole", () => {
+    const result = detectGap(105, 100, { gapConfirmationLedgers: 10 }, 110);
+    expect(result.hasGap).toBe(false);
+    expect(result.stillCatchingUp).toBe(true);
+  });
 });

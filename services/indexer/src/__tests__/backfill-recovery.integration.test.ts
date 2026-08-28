@@ -23,6 +23,7 @@ function makeConfig(overrides: Partial<BackfillConfig> = {}): BackfillConfig {
     batchSize: 20,
     rateLimitMs: 0,
     alertThreshold: 100,
+    gapConfirmationLedgers: 100,
     circuitBreakerMaxFailures: 3,
     ...overrides,
   };
@@ -182,7 +183,12 @@ describe("Integration — gap recovery with simulated missed events", () => {
     const coordinator = new BackfillCoordinator(config, fetcher);
 
     await expect(
-      coordinator.recoverGap(1, 50, async (ev) => ev[ev.length - 1].ledger, new AbortController().signal)
+      coordinator.recoverGap(
+        1,
+        50,
+        async (ev) => ev[ev.length - 1].ledger,
+        new AbortController().signal
+      )
     ).rejects.toThrow(CircuitBreakerOpenError);
 
     expect(coordinator.status).toBe("circuit_open");

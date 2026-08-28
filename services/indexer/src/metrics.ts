@@ -44,6 +44,13 @@ export const serializationRetriesTotal = new Counter(
   "Number of PostgreSQL serialization or deadlock retries"
 );
 
+export const scoreRefreshDeferredTotal = new Counter(
+  "score_refresh_deferred_total",
+  "Number of post_scores materialized-view refreshes deferred (active concurrent refresh or lock contention)"
+);
+
 export function metricsText(): string {
-  return serializationRetriesTotal.toPrometheus();
+  return [serializationRetriesTotal.toPrometheus(), scoreRefreshDeferredTotal.toPrometheus()].join(
+    ""
+  );
 }
