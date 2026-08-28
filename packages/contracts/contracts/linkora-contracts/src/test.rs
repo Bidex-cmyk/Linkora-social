@@ -1737,6 +1737,53 @@ fn test_report_post_already_reported_panics() {
 }
 
 #[test]
+#[should_panic(expected = "open reports limit reached")]
+fn test_report_post_rejects_when_open_reports_limit_is_reached() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, treasury) = setup_contract(&env);
+    let moderator = admin.clone();
+    let reporter = Address::generate(&env);
+    let stake_token = setup_token(&env, &reporter);
+    let mods = symbol_short!("mods");
+    let mod_signer = Address::generate(&env);
+    let pool_admins = soroban_sdk::vec![&env, moderator.clone(), mod_signer.clone()];
+    client.grant_role(&moderator, &moderator, &Role::Moderator);
+    client.create_pool(&moderator, &mods, &stake_token, &pool_admins, &1);
+
+    for i in 0..10 {
+        let author = Address::generate(&env);
+        let token = setup_token(&env, &author);
+        client.set_profile(
+            &author,
+            &String::from_str(&env, &format!("author_{i}")),
+            &token,
+        );
+        let post_id = client.create_post(&author, &String::from_str(&env, "spam report"));
+        client.report_post(
+            &reporter,
+            &post_id,
+            &stake_token,
+            &10,
+            &BytesN::from_array(&env, &[i as u8 + 10; 32]),
+        );
+    }
+
+    let author = Address::generate(&env);
+    let token = setup_token(&env, &author);
+    client.set_profile(&author, &String::from_str(&env, "overflow_user"), &token);
+    let post_id = client.create_post(&author, &String::from_str(&env, "overflow report"));
+    client.report_post(
+        &reporter,
+        &post_id,
+        &stake_token,
+        &10,
+        &BytesN::from_array(&env, &[99u8; 32]),
+    );
+}
+
+#[test]
 #[should_panic(expected = "cannot report own post")]
 fn test_report_post_reporter_cannot_report_own_post() {
     let env = Env::default();
