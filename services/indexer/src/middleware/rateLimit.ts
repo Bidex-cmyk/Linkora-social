@@ -381,12 +381,21 @@ export function getRateLimitStoreStatus(): RateLimitStoreStatus {
 
 // ── Helper functions ──────────────────────────────────────────────────────────
 
+/**
+ * Resolve the client IP used as the rate-limit key.
+ *
+ * `X-Forwarded-For` is client-controlled, so it must never be read directly —
+ * a caller can set it to an arbitrary value and get a fresh limiter bucket on
+ * every request. Instead we rely on `req.ip`, which Express derives using the
+ * app's `trust proxy` setting (`app.set("trust proxy", 1)` in
+ * `api/index.ts`): with exactly one trusted hop configured, Express walks
+ * `X-Forwarded-For` from the right and returns the address our proxy actually
+ * observed, ignoring any attacker-prepended entries. When the app has no
+ * trusted proxy configured (e.g. in tests), `req.ip` falls back to the raw
+ * socket address, which is not spoofable either.
+ */
 function getClientIP(req: Request): string {
-  const forwarded = req.headers["x-forwarded-for"];
-  if (typeof forwarded === "string") {
-    return forwarded.split(",")[0].trim();
-  }
-  return req.ip || "unknown";
+  return req.ip || req.socket.remoteAddress || "unknown";
 }
 
 function isWriteEndpoint(path: string, method: string): boolean {

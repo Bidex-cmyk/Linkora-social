@@ -25,7 +25,8 @@ const IDEMPOTENCY_PENDING_STATUS = 0;
 export type IdempotencyClaimResult =
   | { status: "claimed" }
   | { status: "in_progress" }
-  | { status: "cached"; responseStatus: number; responseBody: unknown };
+  | { status: "cached"; responseStatus: number; responseBody: unknown }
+  | { status: "conflict" };
 
 class Database {
   private pool: Pool;
@@ -185,51 +186,111 @@ class Database {
   }
 
   /**
-   * Atomically claim an idempotency key for processing.
+   * Atomically claim an idempotency key for processing, scoped to the
+   * authenticated sender. Two different senders reusing the same
+   * client-generated key are independent — the key alone is not a global
+   * lock.
    *
-   * - 'claimed': no prior attempt exists; the caller owns processing and
-   *   must call `completeIdempotencyKey` once it has a response.
-   * - 'cached': a prior attempt already completed; the caller should replay
-   *   the stored response instead of reprocessing.
-   * - 'in_progress': a concurrent request already claimed this key and
-   *   hasn't finished yet.
+   * - 'claimed': no prior attempt exists for this (sender, key); the caller
+   *   owns processing and must call `completeIdempotencyKey` once it has a
+   *   response.
+   * - 'cached': a prior attempt for this (sender, key) with the same payload
+   *   already completed; the caller should replay the stored response
+   *   instead of reprocessing.
+   * - 'in_progress': a concurrent request already claimed this (sender, key)
+   *   with the same payload and hasn't finished yet.
+   * - 'conflict': this (sender, key) pair was already used with a
+   *   *different* payload.
    */
-  async claimIdempotencyKey(key: string): Promise<IdempotencyClaimResult> {
+  async claimIdempotencyKey(
+    senderAddress: string,
+    key: string,
+    requestFingerprint: string
+  ): Promise<IdempotencyClaimResult> {
     const insertQuery = `
-      INSERT INTO message_idempotency (idempotency_key, response_status, response_body)
-      VALUES ($1, $2, '{}'::jsonb)
-      ON CONFLICT (idempotency_key) DO NOTHING
+      INSERT INTO message_idempotency
+        (sender_address, idempotency_key, response_status, response_body, request_fingerprint)
+      VALUES ($1, $2, $3, '{}'::jsonb, $4)
+      ON CONFLICT (sender_address, idempotency_key) DO NOTHING
       RETURNING idempotency_key
     `;
 
-    const insertResult = await this.pool.query(insertQuery, [key, IDEMPOTENCY_PENDING_STATUS]);
+    const insertResult = await this.pool.query(insertQuery, [
+      senderAddress,
+      key,
+      IDEMPOTENCY_PENDING_STATUS,
+      requestFingerprint,
+    ]);
     if (insertResult.rowCount && insertResult.rowCount > 0) {
       return { status: "claimed" };
     }
 
-    const cached = await this.getIdempotencyResponse(key);
-    if (cached) {
-      return {
-        status: "cached",
-        responseStatus: cached.responseStatus,
-        responseBody: cached.responseBody,
-      };
+    const existing = await this.getIdempotencyRecord(senderAddress, key);
+    if (!existing) {
+      // The row was pruned (expired) between the failed insert and this
+      // read; treat it as a concurrent claim still settling.
+      return { status: "in_progress" };
     }
-    return { status: "in_progress" };
+
+    if (existing.requestFingerprint !== requestFingerprint) {
+      return { status: "conflict" };
+    }
+
+    if (existing.responseStatus === IDEMPOTENCY_PENDING_STATUS) {
+      return { status: "in_progress" };
+    }
+
+    return {
+      status: "cached",
+      responseStatus: existing.responseStatus,
+      responseBody: existing.responseBody,
+    };
+  }
+
+  /**
+   * Fetch the idempotency record for (senderAddress, key), pending or
+   * completed, along with the fingerprint of the payload that claimed it.
+   */
+  private async getIdempotencyRecord(
+    senderAddress: string,
+    key: string
+  ): Promise<{
+    responseStatus: number;
+    responseBody: unknown;
+    requestFingerprint: string;
+  } | null> {
+    const query = `
+      SELECT response_status, response_body, request_fingerprint
+      FROM message_idempotency
+      WHERE sender_address = $1 AND idempotency_key = $2
+    `;
+    const result = await this.pool.query(query, [senderAddress, key]);
+    if (result.rowCount === 0) return null;
+
+    return {
+      responseStatus: result.rows[0].response_status,
+      responseBody: result.rows[0].response_body,
+      requestFingerprint: result.rows[0].request_fingerprint,
+    };
   }
 
   /**
    * Fetch a completed (non-pending) idempotency response, if one exists.
    */
   async getIdempotencyResponse(
+    senderAddress: string,
     key: string
   ): Promise<{ responseStatus: number; responseBody: unknown } | null> {
     const query = `
       SELECT response_status, response_body
       FROM message_idempotency
-      WHERE idempotency_key = $1 AND response_status <> $2
+      WHERE sender_address = $1 AND idempotency_key = $2 AND response_status <> $3
     `;
-    const result = await this.pool.query(query, [key, IDEMPOTENCY_PENDING_STATUS]);
+    const result = await this.pool.query(query, [
+      senderAddress,
+      key,
+      IDEMPOTENCY_PENDING_STATUS,
+    ]);
     if (result.rowCount === 0) return null;
 
     return {
@@ -242,13 +303,18 @@ class Database {
    * Record the final response for a claimed idempotency key so future
    * duplicate submissions can replay it instead of reprocessing.
    */
-  async completeIdempotencyKey(key: string, status: number, body: unknown): Promise<void> {
+  async completeIdempotencyKey(
+    senderAddress: string,
+    key: string,
+    status: number,
+    body: unknown
+  ): Promise<void> {
     const query = `
       UPDATE message_idempotency
-      SET response_status = $2, response_body = $3
-      WHERE idempotency_key = $1
+      SET response_status = $3, response_body = $4
+      WHERE sender_address = $1 AND idempotency_key = $2
     `;
-    await this.pool.query(query, [key, status, JSON.stringify(body)]);
+    await this.pool.query(query, [senderAddress, key, status, JSON.stringify(body)]);
   }
 
   async deleteExpiredIdempotencyKeys(ttlHours: number): Promise<number> {

@@ -18,7 +18,7 @@ export interface DeviceTokenRecord {
 export interface DeviceTokenStore {
   register(address: string, token: string, platform: string): Promise<void>;
   getToken(address: string): Promise<string | null>;
-  removeToken(address: string, token?: string): Promise<void>;
+  removeToken(address: string, token: string): Promise<void>;
   removeTokenByPlatform(address: string, platform: string): Promise<void>;
 }
 
@@ -59,8 +59,8 @@ export class NotificationService {
     return this.deviceTokenStore.getToken(address);
   }
 
-  async deregisterDeviceToken(address: string, token?: string): Promise<void> {
-    if (!address) {
+  async deregisterDeviceToken(address: string, token: string): Promise<void> {
+    if (!address || !token) {
       return;
     }
 
@@ -278,13 +278,9 @@ export class MemoryDeviceTokenStore implements DeviceTokenStore {
     return tokens[tokens.length - 1].token;
   }
 
-  async removeToken(address: string, token?: string): Promise<void> {
-    if (token) {
-      const tokens = this.deviceTokens.get(address) || [];
-      this.deviceTokens.set(address, tokens.filter(t => t.token !== token));
-    } else {
-      this.deviceTokens.delete(address);
-    }
+  async removeToken(address: string, token: string): Promise<void> {
+    const tokens = this.deviceTokens.get(address) || [];
+    this.deviceTokens.set(address, tokens.filter(t => t.token !== token));
   }
 
   async removeTokenByPlatform(address: string, platform: string): Promise<void> {
@@ -324,24 +320,14 @@ export class PostgresDeviceTokenStore implements DeviceTokenStore {
     return (res.rows[0]?.token as string | undefined) ?? null;
   }
 
-  async removeToken(address: string, token?: string): Promise<void> {
-    if (token) {
-      await this.pool.query(
-        `
-        DELETE FROM device_tokens
-        WHERE address = $1 AND token = $2
-        `,
-        [address, token]
-      );
-    } else {
-      await this.pool.query(
-        `
-        DELETE FROM device_tokens
-        WHERE address = $1
-        `,
-        [address]
-      );
-    }
+  async removeToken(address: string, token: string): Promise<void> {
+    await this.pool.query(
+      `
+      DELETE FROM device_tokens
+      WHERE address = $1 AND token = $2
+      `,
+      [address, token]
+    );
   }
 
   async removeTokenByPlatform(address: string, platform: string): Promise<void> {
