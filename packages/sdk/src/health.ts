@@ -64,12 +64,19 @@ export class ConnectionHealthMonitor {
   private hasChecked = false;
   private retryMetrics: RetryMetrics = emptyRetryMetrics();
 
+private boundResume = () => this.resume();
+
   constructor(rpcUrl: string, config: HealthCheckConfig = {}) {
     this.rpcUrl = rpcUrl;
     this.intervalMs = config.intervalMs ?? 30_000;
     this.backoffMs = config.backoffMs ?? 1_000;
     this.maxBackoffMs = config.maxBackoffMs ?? 30_000;
     this.pingTimeoutMs = config.pingTimeoutMs ?? 10_000;
+
+    if (typeof window !== "undefined") {
+      window.addEventListener("online", this.boundResume);
+      document.addEventListener("visibilitychange", this.boundResume);
+    }
   }
 
   /**
@@ -107,6 +114,17 @@ export class ConnectionHealthMonitor {
     }
   }
 
+
+  /** Alias for start(). Useful for resuming after a sustained outage stops polling. */
+  resume(): void {
+    this.start();
+  }
+
+  /** Alias for start(). */
+  wake(): void {
+    this.start();
+  }
+
   /** Start periodic health checks. Idempotent — safe to call multiple times. */
   start(): void {
     if (this.timer !== null) return; // already running
@@ -127,6 +145,10 @@ export class ConnectionHealthMonitor {
   /** Destroy the monitor, stop all checks, clear listeners, and reset state. */
   destroy(): void {
     this.stop();
+    if (typeof window !== "undefined") {
+      window.removeEventListener("online", this.boundResume);
+      document.removeEventListener("visibilitychange", this.boundResume);
+    }
     this.listeners = [];
     this.status = "disconnected";
     this.hasChecked = false;
@@ -135,7 +157,8 @@ export class ConnectionHealthMonitor {
   }
 
   private scheduleCheck(delayMs: number): void {
-    this.timer = setTimeout(() => this.runCheck(), delayMs);
+    const baseJitter = delayMs === 0 ? Math.random() * this.backoffMs : delayMs * 0.2 * Math.random();
+    this.timer = setTimeout(() => this.runCheck(), delayMs + baseJitter);
   }
 
   private async runCheck(): Promise<void> {
@@ -153,7 +176,12 @@ export class ConnectionHealthMonitor {
     this.hasChecked = true;
 
     if (!this.stopped) {
-      this.scheduleCheck(ok ? this.intervalMs : this.nextBackoff());
+      if (!ok && this._currentBackoff >= this.maxBackoffMs) {
+        // Sustained outage reached max backoff cap. Stop probing until manual restart or network recovery event.
+        this.stop();
+      } else {
+        this.scheduleCheck(ok ? this.intervalMs : this.nextBackoff());
+      }
     }
   }
 
