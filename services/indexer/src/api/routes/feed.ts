@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import { Pool } from "pg";
+import type { QueryResult, QueryResultRow } from "pg";
 import { validateParams, validateQuery } from "../../middleware/validate";
 import { z } from "zod";
 import { stellarAddressSchema, cursorPaginationSchema } from "@linkora/types/src/schemas";
@@ -16,6 +17,30 @@ const followingFeedQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
   cursor: z.string().optional(),
 });
+
+/**
+ * Run a read-only query against the post_scores materialized view, retrying
+ * once on transient lock contention. A CONCURRENTLY refresh briefly holds an
+ * exclusive lock on the view; readers that arrive mid-swap can hit a lock
+ * timeout (55P03) and should retry rather than fail the request.
+ */
+async function queryView<R extends QueryResultRow = QueryResultRow>(
+  pg: Pool,
+  text: string,
+  params: unknown[]
+): Promise<QueryResult<R>> {
+  try {
+    return await pg.query<R>(text, params);
+  } catch (err) {
+    const code = (err as { code?: unknown })?.code;
+    const isTransient =
+      code === "55P03" || code === "57014" || code === "40P01" || code === "40001";
+    if (!isTransient) throw err;
+    // Briefly wait for the refresh to release the lock, then retry once.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    return await pg.query<R>(text, params);
+  }
+}
 
 export function createFeedRouter(pg: Pool): Router {
   const router = Router();
@@ -49,7 +74,7 @@ export function createFeedRouter(pg: Pool): Router {
       query += ` ORDER BY score DESC LIMIT $${paramIndex}`;
       params.push(limit);
 
-      const result = await pg.query(query, params);
+      const result = await queryView(pg, query, params);
 
       res.json({
         posts: result.rows.map((row) => ({

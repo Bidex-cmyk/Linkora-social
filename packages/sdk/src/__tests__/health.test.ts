@@ -253,6 +253,39 @@ describe("ConnectionHealthMonitor", () => {
       // If double-start created duplicate intervals, we'd see more calls
       expect(callCount).toBeLessThan(5);
     });
+
+    it("does not duplicate the polling loop or the listener when re-registered", async () => {
+      mockGetLatestLedger.mockResolvedValue({ sequence: 1 });
+      const monitor = new ConnectionHealthMonitor("https://rpc.example.com", { intervalMs: 50 });
+      const cb = jest.fn();
+
+      // Simulate a React effect re-running on every render with a stable callback ref.
+      monitor.onConnectionStatusChange(cb);
+      monitor.onConnectionStatusChange(cb);
+      monitor.onConnectionStatusChange(cb);
+
+      await waitFor(() => cb.mock.calls.length > 0);
+      // A single status transition should fire the callback exactly once, not three times.
+      expect(cb).toHaveBeenCalledTimes(1);
+      monitor.stop();
+    });
+
+    it("onConnectionStatusChange returns an unsubscribe function that removes the listener", async () => {
+      mockGetLatestLedger.mockResolvedValue({ sequence: 1 });
+      const monitor = new ConnectionHealthMonitor("https://rpc.example.com", { intervalMs: 30 });
+      const cb = jest.fn();
+      const unsubscribe = monitor.onConnectionStatusChange(cb);
+
+      await waitFor(() => cb.mock.calls.length > 0);
+      unsubscribe();
+
+      const callsBefore = cb.mock.calls.length;
+      mockGetLatestLedger.mockRejectedValue(new Error("down"));
+      await new Promise((r) => setTimeout(r, 60));
+
+      expect(cb.mock.calls.length).toBe(callsBefore);
+      monitor.stop();
+    });
   });
 
   describe("LinkoraClient integration", () => {

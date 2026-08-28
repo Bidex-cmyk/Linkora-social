@@ -23,7 +23,6 @@ import {
   notFoundHandler,
   validateContentType,
 } from "./middleware";
-import { messageAuthMiddleware, addressOwnershipMiddleware } from "./middleware/auth";
 import {
   rateLimitMiddleware,
   initRateLimiters,
@@ -112,20 +111,10 @@ async function createApp() {
   // Rate limiting
   app.use("/api", rateLimitMiddleware);
 
-  // API routes with auth middleware
-  const messageAuth = messageAuthMiddleware(authService);
-  const addressAuth = addressOwnershipMiddleware(authService);
-  app.use("/api", (req, res, next) => {
-    // POST /messages — verify message signature
-    if (req.method === "POST" && req.path === "/messages") {
-      return messageAuth(req, res, next);
-    }
-    // GET /messages/:address — verify address ownership
-    if (req.method === "GET" && /^\/messages\/[A-Z]/.test(req.path)) {
-      return addressAuth(req, res, next);
-    }
-    next();
-  });
+  // API routes. Auth (message-signature for POST /messages, address-ownership
+  // for GET /messages/:address) is applied per-route inside createRouter,
+  // scoped to exactly the routes that need it — not via a global path-matching
+  // middleware that could over-apply to unrelated routes such as health checks.
   app.use("/api", createRouter(database, authService));
 
   // ── Health endpoints ───────────────────────────────────────────────────────

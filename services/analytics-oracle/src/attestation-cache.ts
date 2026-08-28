@@ -6,6 +6,10 @@
  *             during a periodic sweep triggered by `purgeExpired()`.
  *   2. LRU  — when the cache is full after TTL cleanup, the least-recently-
  *             used entry is dropped to make room for the new one.
+ *   3. Invalidation — `setSignerId()` clears the whole cache when the oracle
+ *             signer key rotates, and `beginWindow()` clears it whenever the
+ *             analytics report window advances, so a stale signed attestation
+ *             that references a closed window or an old key is never served.
  *
  * All operations (get / set / delete) are O(1) thanks to a doubly-linked
  * list threaded through the same node objects stored in the Map.
@@ -55,6 +59,12 @@ export class AttestationCache<V> {
   // Sentinel nodes — head.next is MRU, tail.prev is LRU.
   private readonly head: Node<V>;
   private readonly tail: Node<V>;
+
+  // Identity scoping for whole-cache invalidation.
+  /** Fingerprint of the signer key the cached signatures were produced with. */
+  private signerId: string | null = null;
+  /** "windowStart:windowEnd" key of the report window the cache now covers. */
+  private windowKey: string | null = null;
 
   // Stats counters
   private hits = 0;
@@ -171,6 +181,44 @@ export class AttestationCache<V> {
       node = prev;
     }
     return count;
+  }
+
+  /**
+   * Drop every cached entry, regardless of TTL. Used for whole-cache
+   * invalidation — signer rotation and report-window advancement.
+   */
+  clear(): void {
+    if (this.map.size === 0) return;
+    this.map.clear();
+    this.head.next = this.tail;
+    this.tail.prev = this.head;
+  }
+
+  /**
+   * Bind the cache to a signer identity (e.g. a fingerprint of the oracle
+   * public key). When the identity differs from the previous one the whole
+   * cache is invalidated, because cached signatures produced under the old
+   * key are no longer verifiable against the current signer.
+   *
+   * @param signerId  Fingerprint of the current signer key, or null to unset.
+   */
+  setSignerId(signerId: string | null): void {
+    if (signerId === this.signerId) return;
+    this.clear();
+    this.signerId = signerId;
+  }
+
+  /**
+   * Announce that the oracle now covers the report window
+   * [windowStart, windowEnd]. When the window advances, all cached
+   * attestations reference a closed window and are dropped so consumers never
+   * receive a stale signature for a report that is no longer current.
+   */
+  beginWindow(windowStart: bigint, windowEnd: bigint): void {
+    const key = `${windowStart}:${windowEnd}`;
+    if (key === this.windowKey) return;
+    this.clear();
+    this.windowKey = key;
   }
 
   /** Current number of live entries (may include not-yet-purged stale ones). */

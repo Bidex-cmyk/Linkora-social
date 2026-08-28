@@ -5216,6 +5216,22 @@ fn test_like_post_second_call_is_no_op() {
     assert_eq!(like_count_after_second, 1);
 }
 
+#[test]
+fn test_batch_like_deduplicates_duplicate_ids() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let author = Address::generate(&env);
+    let liker = Address::generate(&env);
+    let post_id = client.create_post(&author, &String::from_str(&env, "Duplicate batch like"));
+
+    client.batch_like(&liker, &vec![&env, post_id, post_id, post_id]);
+
+    assert_eq!(client.get_like_count(&post_id), 1);
+    assert!(client.has_liked(&liker, &post_id));
+}
+
 // ── Issue #680: remove_pool_admin threshold unreachable validation ────────────
 
 #[test]
@@ -6789,6 +6805,24 @@ fn pay_rent_rejects_tiny_payment() {
     client.set_profile(&user, &String::from_str(&env, "alice"), &token);
 
     client.pay_rent(&user, &token, &1);
+}
+
+#[test]
+#[should_panic(expected = "token must match profile creator token")]
+fn pay_rent_rejects_mismatched_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, _) = setup_contract(&env);
+    client.set_rent_rate_bps(&admin, &100);
+
+    let user = Address::generate(&env);
+    let creator_token = setup_token(&env, &user);
+    let other_token = setup_token(&env, &Address::generate(&env));
+
+    client.set_profile(&user, &String::from_str(&env, "alice"), &creator_token);
+
+    client.pay_rent(&user, &other_token, &1_000_000_000i128);
 }
 
 // ── Lazy Cleanup Tests ────────────────────────────────────────────────────────

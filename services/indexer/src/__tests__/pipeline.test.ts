@@ -280,6 +280,27 @@ describe("IngestPipeline — exactly-once", () => {
     expect(received).toEqual([30]); // published exactly once, after commit
   });
 
+  it("invokes onCommit with the new cursor only after a durable commit", async () => {
+    const pool = new FakePool();
+    const commits: number[] = [];
+
+    const pipeline = new IngestPipeline(pool, {
+      streamId: "C123",
+      bus: new EventBus(),
+      domainProcessor: postProcessor({ value: true }), // crash first
+      onCommit: (cursor) => {
+        commits.push(cursor);
+      },
+    });
+
+    const batch = [makeEvent(40, 0, "heidi")];
+    await expect(pipeline.processBatch(batch)).rejects.toThrow();
+    expect(commits).toEqual([]); // not invoked on rollback — no root emission
+
+    await pipeline.processBatch(batch);
+    expect(commits).toEqual([40]); // invoked exactly once, after commit
+  });
+
   it("readCursor reflects the last committed cursor", async () => {
     const pool = new FakePool();
     const pipeline = new IngestPipeline(pool, {

@@ -207,7 +207,9 @@ export class RelayClient {
     senderKeypair: Keypair,
     recipient: string,
     ciphertext: Uint8Array,
-    messageIndex: number
+    messageIndex: number,
+    retryCount: number = 0,
+    maxRetries: number = 3
   ): Promise<void> {
     const timestamp = Math.floor(Date.now() / 1000);
     const signature = this.createAuthSignature(senderKeypair, timestamp);
@@ -222,23 +224,49 @@ export class RelayClient {
       signature,
     };
 
-    const response = await fetchWithTimeout(`${this.baseUrl}/messages`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(request),
-    }, this.timeoutMs);
+    try {
+      const response = await fetchWithTimeout(
+        `${this.baseUrl}/messages`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(request),
+        },
+        this.timeoutMs
+      );
 
-    if (!response.ok) {
-      const error = await response.text();
-      if (response.status === 401) {
-        throw new RelayAuthError(`Authentication failed: ${error}`);
+      if (!response.ok) {
+        const error = await response.text();
+        if (response.status === 401 || response.status === 403) {
+          throw new RelayAuthError(`Authentication failed: ${error}`);
+        }
+        if (response.status >= 400 && response.status < 500) {
+          throw new Error(`Relay request rejected (non-retryable): ${response.status} ${error}`);
+        }
+        throw new Error(`Relay request failed: ${response.status} ${error}`);
       }
-      if (response.status === 403) {
-        throw new RelayAuthError(`Request rejected: ${error}`);
+    } catch (error) {
+      if (error instanceof RelayAuthError) {
+        throw error;
       }
-      throw new Error(`Relay request failed: ${response.status} ${error}`);
+      if (error instanceof Error && error.message.includes("non-retryable")) {
+        throw error;
+      }
+      if (retryCount < maxRetries) {
+        const delay = Math.min(1000 * Math.pow(2, retryCount), 30000);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        return this.sendMessage(
+          senderKeypair,
+          recipient,
+          ciphertext,
+          messageIndex,
+          retryCount + 1,
+          maxRetries
+        );
+      }
+      throw error;
     }
   }
 
@@ -259,7 +287,11 @@ export class RelayClient {
       params.set("cursor", cursor);
     }
 
-    const response = await fetchWithTimeout(`${this.baseUrl}/messages/${conversationId}?${params}`, undefined, this.timeoutMs);
+    const response = await fetchWithTimeout(
+      `${this.baseUrl}/messages/${conversationId}?${params}`,
+      undefined,
+      this.timeoutMs
+    );
 
     if (!response.ok) {
       throw new Error(`Failed to fetch messages: ${response.status}`);
@@ -301,4 +333,47 @@ export function getConversationId(addressA: string, addressB: string): string {
   const sorted = [addressA, addressB].sort();
   const combined = sorted[0] + sorted[1];
   return Buffer.from(sha256(new TextEncoder().encode(combined))).toString("hex");
+}
+
+// ── Key rotation detection ───────────────────────────────────────────────────
+
+export interface KeyRotationResult {
+  /** `true` when the on-chain key differs from the cached key. */
+  rotated: boolean;
+  /** The current on-chain key (always present when `onChainKey` was provided). */
+  currentKey: Uint8Array;
+}
+
+/**
+ * Compare an on-chain X25519 public key against a previously-cached key.
+ *
+ * This is a pure comparison helper – it does **not** touch any storage.
+ * The caller is responsible for:
+ *  1. Persisting the on-chain key after a successful comparison.
+ *  2. Invalidating any cached session keys when `rotated` is `true`.
+ *  3. Resetting the sync cursor so messages under the new key are fetched.
+ *
+ * @param cachedKey  The previously-cached public key, or `null` on first sync.
+ * @param onChainKey The current key fetched from the contract.
+ * @returns A `KeyRotationResult` indicating whether a rotation occurred.
+ */
+export function detectKeyRotation(
+  cachedKey: Uint8Array | null,
+  onChainKey: Uint8Array
+): KeyRotationResult {
+  if (!cachedKey) {
+    return { rotated: false, currentKey: onChainKey };
+  }
+
+  if (cachedKey.length !== onChainKey.length) {
+    return { rotated: true, currentKey: onChainKey };
+  }
+
+  for (let i = 0; i < cachedKey.length; i++) {
+    if (cachedKey[i] !== onChainKey[i]) {
+      return { rotated: true, currentKey: onChainKey };
+    }
+  }
+
+  return { rotated: false, currentKey: onChainKey };
 }

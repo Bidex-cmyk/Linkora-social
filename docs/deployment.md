@@ -170,10 +170,11 @@ See [`services/indexer/migrations/README.md`](../services/indexer/migrations/REA
 
 ### DM Relay
 
-The dm-relay has one migration in `services/dm-relay/migrations/`:
+The dm-relay's migrations live in `services/dm-relay/migrations/`:
 
 ```bash
 psql "$DATABASE_URL" -f services/dm-relay/migrations/001_message_idempotency.sql
+psql "$DATABASE_URL" -f services/dm-relay/migrations/002_scope_idempotency_by_sender.sql
 ```
 
 Or use the built-in migration script:

@@ -90,7 +90,7 @@ describe("notifications API", () => {
     const service = new NotificationService();
     await service.registerDeviceToken(address, "ExpoPushToken[token-456]", "ios");
 
-    const res = await postDeregister({ address }, service);
+    const res = await postDeregister({ address, token: "ExpoPushToken[token-456]" }, service);
 
     expect(res.status).toHaveBeenCalledWith(204);
     expect(res.send).toHaveBeenCalled();
@@ -100,8 +100,28 @@ describe("notifications API", () => {
   it("rejects deregistration with invalid address", async () => {
     const service = new NotificationService();
 
-    const res = await postDeregister({ address: "bad" }, service);
+    const res = await postDeregister({ address: "bad", token: "ExpoPushToken[token-456]" }, service);
 
     expect(res.status).toHaveBeenCalledWith(400);
+  });
+
+  it("rejects deregistration missing a device token", async () => {
+    const service = new NotificationService();
+
+    const res = await postDeregister({ address }, service);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+  });
+
+  it("deregistering one device does not affect other devices on the same address", async () => {
+    const service = new NotificationService();
+    await service.registerDeviceToken(address, "ExpoPushToken[device-a]", "ios");
+    await service.registerDeviceToken(address, "ExpoPushToken[device-b]", "android");
+
+    const res = await postDeregister({ address, token: "ExpoPushToken[device-a]" }, service);
+
+    expect(res.status).toHaveBeenCalledWith(204);
+    // The most recently registered surviving token (device-b) is still returned.
+    await expect(service.getDeviceToken(address)).resolves.toBe("ExpoPushToken[device-b]");
   });
 });

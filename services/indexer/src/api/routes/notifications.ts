@@ -17,7 +17,7 @@ const registerDeviceSchema = z.object({
 
 const deregisterDeviceSchema = z.object({
   address: stellarAddressSchema,
-  token: z.string().optional(),
+  token: z.string().min(1, "token is required"),
 });
 
 const preferencesSchema = z.object({

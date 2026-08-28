@@ -61,6 +61,12 @@ const attestationCache = new AttestationCache<SignedAttestation>({
   ttlMs: ATTESTATION_CACHE_TTL_MS,
 });
 
+// Bind the cache to the current signer key. If the key rotates (reload of the
+// private key env), calling setSignerId again with the new fingerprint clears
+// every cached signature produced under the previous key.
+const signerId = Buffer.from(ed.getPublicKey(oraclePrivateKey)).toString("hex");
+attestationCache.setSignerId(signerId);
+
 let lastWindowEnd = BigInt(0);
 
 function generateRequestId(): string {
@@ -154,6 +160,11 @@ async function scheduleLoop(currentLedger: bigint): Promise<void> {
   if (windowEnd <= windowStart) {
     return;
   }
+
+  // Window-start invalidation: cached attestations reference the *previous*
+  // report window, which is now closed. Drop them so a stale attestation is
+  // never served once the oracle begins covering the new window.
+  attestationCache.beginWindow(windowStart, windowEnd);
 
   lastWindowEnd = windowEnd;
   await runWindow(windowStart, windowEnd);

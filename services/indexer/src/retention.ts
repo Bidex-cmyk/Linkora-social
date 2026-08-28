@@ -189,8 +189,15 @@ export async function ensureNextPartition(
 
 /**
  * Drop (or detach) partitions that are:
- *   – entirely older than  currentLedger - retentionLedgers
+ *   – entirely older than  retentionHead - retentionLedgers
  *   – fully processed (no unprocessed rows)
+ *
+ * The retention head is derived from BOTH the live cursor and the newest
+ * partition actually present on disk (`max(currentLedger, newestPartitionHi)`),
+ * and the partition list is re-read fresh every cycle.  Anchoring the cutoff
+ * to a single pre-loop value taken only from the cursor starves retention
+ * when the cursor lags behind migrated partitions (migration 012 replay) or
+ * when no new partition has been created yet.
  *
  * @param currentLedger  The indexer's current processed ledger cursor.
  * @param cfg            Retention config.
@@ -202,19 +209,38 @@ export async function dropOldPartitions(
   cfg: RetentionConfig,
   pool: Pool
 ): Promise<string[]> {
-  const cutoff = currentLedger - BigInt(cfg.retentionLedgers);
-  if (cutoff <= 0n) return []; // retention window not yet reached
+  const retentionLedgers = BigInt(cfg.retentionLedgers);
+  const partitionSize = BigInt(cfg.partitionSize);
+
+  const partitions = await listPartitions(pool);
+  // No partitions to manage — nothing to drop, and nothing that can error.
+  if (partitions.length === 0) return [];
+
+  // Recompute the cutoff against the data actually present rather than a
+  // fixed pre-loop value.  The oldest-present/newest-present bounds are
+  // derived from the fresh partition list, so a cursor that is far behind
+  // existing partitions (migration replay) can never compute a bogus
+  // "before epoch" cutoff that silently stops retention.
+  const newestHi = partitions.reduce((max, p) => (p.hiLedger > max ? p.hiLedger : max), 0n);
+  const retentionHead = currentLedger > newestHi ? currentLedger : newestHi;
+
+  // Underflow guard: when the present data span is smaller than the retention
+  // window the cutoff would fall below the first partition's start — that
+  // means nothing is old enough to drop yet.
+  if (retentionHead <= retentionLedgers) return [];
+
+  const cutoff = retentionHead - retentionLedgers;
 
   const detachConcurrently = await supportsDetachConcurrently(pool);
-  const partitions = await listPartitions(pool);
   const dropped: string[] = [];
 
   for (const p of partitions) {
     // Only consider partitions whose entire range is safely below the cutoff.
-    // We require hi < cutoff - partitionSize (one bucket of headroom) so that
+    // We require hi + partitionSize < cutoff (one bucket of headroom) so that
     // the partition immediately adjacent to the retention boundary is never
-    // dropped until a full extra partition-size has elapsed.
-    if (p.hiLedger >= cutoff - BigInt(cfg.partitionSize)) continue;
+    // dropped until a full extra partition-size has elapsed.  The comparison
+    // is written additively so it can never underflow.
+    if (p.hiLedger + partitionSize >= cutoff) continue;
 
     const processed = await isFullyProcessed(pool, p.tableName);
     if (!processed) {

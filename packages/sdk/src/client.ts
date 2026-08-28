@@ -50,11 +50,20 @@ function ensureNonEmptyString(value: string, fieldName: string): void {
   }
 }
 
-// TODO(#1042): Add isValidContractAddress() helper for Stellar contract address validation
+function isValidContractAddress(value: string): boolean {
+  try {
+    return StrKey.isValidContract(value);
+  } catch {
+    return false;
+  }
+}
+
 function ensureAddress(value: string, fieldName: string): void {
   ensureNonEmptyString(value, fieldName);
-  if (!StrKey.isValidEd25519PublicKey(value)) {
-    throw new InvalidInputError(`${fieldName} must be a valid Stellar public key.`);
+  if (!StrKey.isValidEd25519PublicKey(value) && !isValidContractAddress(value)) {
+    throw new InvalidInputError(
+      `${fieldName} must be a valid Stellar public key or contract address.`
+    );
   }
 }
 
@@ -112,6 +121,8 @@ export interface ClientConfig {
    * Defaults to true when `rpcUrl` starts with `http://`.
    */
   allowHttp?: boolean;
+  /** Horizon URL for account sequence fetching. If not provided, defaults based on networkPassphrase. */
+  horizonUrl?: string;
 }
 
 export interface DeployCreatorTokenParams {
@@ -142,6 +153,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
   private readonly _healthMonitor: ConnectionHealthMonitor;
   private readonly _timeoutMs: number;
   private readonly _allowHttp: boolean;
+  private readonly _horizonUrl?: string;
 
   constructor(config: ClientConfig) {
     super({
@@ -156,6 +168,7 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     this._networkPassphrase = config.networkPassphrase || DEFAULT_NETWORK;
     this._timeoutMs = config.timeoutMs ?? 30_000;
     this._allowHttp = config.allowHttp ?? config.rpcUrl.startsWith("http://");
+    this._horizonUrl = config.horizonUrl;
 
     const { autoStart, ...healthCfg } = config.healthCheck ?? {};
     this._healthMonitor = new ConnectionHealthMonitor(this._rpcUrl, healthCfg);
@@ -187,8 +200,11 @@ export class LinkoraClient extends GeneratedLinkoraClient {
   /**
    * Register a callback for connection status changes ("connected" | "disconnected").
    * Starts the periodic health-check loop on first call if not already running.
+   * Re-registering the same callback reference is a no-op, so this is safe to call
+   * repeatedly with a stable callback (e.g. from a React effect on every render).
    *
    * @param callback Function invoked when the connection state transitions.
+   * @returns An unsubscribe function that removes this listener.
    *
    * @example
    * ```ts
@@ -201,9 +217,8 @@ export class LinkoraClient extends GeneratedLinkoraClient {
    * });
    * ```
    */
-  onConnectionStatusChange(callback: ConnectionStatusCallback): void {
-    this._healthMonitor.onConnectionStatusChange(callback);
-    this._healthMonitor.start();
+  onConnectionStatusChange(callback: ConnectionStatusCallback): () => void {
+    return this._healthMonitor.onConnectionStatusChange(callback);
   }
 
   /**
@@ -614,6 +629,25 @@ export class LinkoraClient extends GeneratedLinkoraClient {
   }
 
   /**
+   * Check whether the contract is currently paused. While paused, all state-mutating
+   * calls (follow, post, tip, etc.) will fail simulation.
+   *
+   * @returns True if the contract is paused, false otherwise.
+   *
+   * @example
+   * ```ts
+   * if (await client.isPaused()) {
+   *   console.warn("Linkora is temporarily paused.");
+   * }
+   * ```
+   */
+  async isPaused(): Promise<boolean> {
+    const retval = await this.simulateCallOnContract(this._contractId, "is_paused");
+    if (!retval) return false;
+    return Boolean(scValToNative(retval));
+  }
+
+  /**
    * Fetch a multi-sig pool by its unique ID.
    *
    * @param poolId The unique identifier of the pool.
@@ -738,14 +772,10 @@ export class LinkoraClient extends GeneratedLinkoraClient {
       });
     }
 
-    const horizon =
-      horizonUrl ??
-      (this._networkPassphrase.includes("Test")
-        ? "https://horizon-testnet.stellar.org"
-        : "https://horizon.stellar.org");
+    const effectiveHorizonUrl = horizonUrl ?? this._horizonUrl ?? this.getDefaultHorizonUrl();
 
     const res = await fetchWithTimeout(
-      `${horizon}/accounts/${userAddress}`,
+      `${effectiveHorizonUrl}/accounts/${userAddress}`,
       undefined,
       this._timeoutMs
     );
@@ -766,6 +796,20 @@ export class LinkoraClient extends GeneratedLinkoraClient {
     );
 
     return tx.toEnvelope().toXDR("base64");
+  }
+
+  private getDefaultHorizonUrl(): string {
+    if (this._networkPassphrase.includes("Test")) {
+      return "https://horizon-testnet.stellar.org";
+    }
+    if (this._networkPassphrase === "Public Global Stellar Network ; September 2015") {
+      return "https://horizon.stellar.org";
+    }
+    throw new ValidationError(
+      `Cannot determine Horizon URL for custom network passphrase: "${this._networkPassphrase}". ` +
+        `Please provide horizonUrl in ClientConfig.`,
+      { networkPassphrase: this._networkPassphrase }
+    );
   }
 
   // ── Governance convenience overrides ──────────────────────────────────────

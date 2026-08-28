@@ -2166,8 +2166,14 @@ impl LinkoraContract {
         require_with_error!(&env, post_ids.len() <= 50, "batch size must not exceed 50");
         Self::require_not_paused(&env);
 
+        let mut seen: Map<u64, bool> = Map::new(&env);
         for post_id in post_ids.iter() {
             require_with_error!(&env, post_id > 0, "post id must be positive");
+            if seen.contains_key(post_id) {
+                continue;
+            }
+            seen.set(post_id, true);
+
             let like_key = StorageKey::Like(post_id, user.clone());
             if !env.storage().persistent().has(&like_key) {
                 let post_key = StorageKey::Post(post_id);
@@ -2220,6 +2226,7 @@ impl LinkoraContract {
     /// * Panics if either party has blocked the other
     /// * Panics if tip cooldown has not expired
     /// * Panics if amount exceeds MAX_PROTOCOL_AMOUNT
+    /// * Panics if post author has no registered profile
     pub fn tip(env: Env, tipper: Address, post_id: u64, token: Address, amount: i128) {
         Self::bump_instance(&env);
         tipper.require_auth();
@@ -2232,6 +2239,14 @@ impl LinkoraContract {
         let mut post: Post = env.storage().persistent().get(&key).unwrap_or_else(|| {
             panic!("post not found: {}", post_id);
         });
+
+        // Require the post author has a registered profile before processing tip
+        let profile_key = StorageKey::Profile(post.author.clone());
+        require_with_error!(
+            &env,
+            env.storage().persistent().has(&profile_key),
+            "post author has no registered profile"
+        );
 
         if Self::is_either_blocked(&env, &post.author, &tipper) {
             panic!("blocked");
@@ -2398,7 +2413,23 @@ impl LinkoraContract {
             .persistent()
             .get(&key)
             .expect("pool not found");
-        require_with_error!(&env, pool.token == token, "wrong token for pool");
+        require_with_error!(&env, pool.token == token, &"wrong token for pool");
+
+        // Get balance before transfer to verify actual increase
+        let token_client = token::Client::new(&env, &token);
+        let balance_before = token_client.balance(&env.current_contract_address());
+
+        // Transfer tokens
+        token_client.transfer(&depositor, &env.current_contract_address(), &amount);
+
+        // Verify balance increased by exactly the amount claimed
+        let balance_after = token_client.balance(&env.current_contract_address());
+        let actual_increase = balance_after.saturating_sub(balance_before);
+        require_with_error!(
+            &env,
+            actual_increase == amount,
+            "token balance did not increase by amount"
+        );
 
         pool.balance += amount;
         env.storage().persistent().set(&key, &pool);
@@ -2409,12 +2440,6 @@ impl LinkoraContract {
             .temporary()
             .set(&cooldown_key, &current_ledger);
         Self::bump_temp(&env, &cooldown_key);
-
-        token::Client::new(&env, &token).transfer(
-            &depositor,
-            env.current_contract_address(),
-            &amount,
-        );
 
         PoolDepositEvent {
             depositor,
@@ -2458,14 +2483,17 @@ impl LinkoraContract {
         }
         require_with_error!(&env, pool.balance >= amount, "low balance");
 
-        pool.balance -= amount;
-        env.storage().persistent().set(&key, &pool);
-        Self::bump(&env, &key);
+        // Transfer tokens first, then decrement balance only on success
         token::Client::new(&env, &pool.token).transfer(
             &env.current_contract_address(),
             &recipient,
             &amount,
         );
+
+        // Only decrement pool balance after successful transfer
+        pool.balance -= amount;
+        env.storage().persistent().set(&key, &pool);
+        Self::bump(&env, &key);
 
         PoolWithdrawEvent {
             recipient,
@@ -3456,6 +3484,17 @@ impl LinkoraContract {
         validate_non_default_address(&env, "user", &user);
         validate_non_default_address(&env, "token", &token);
         validate_amount(&env, "rent amount", amount);
+
+        let profile: Profile = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Profile(user.clone()))
+            .unwrap_or_else(|| panic!("profile does not exist"));
+        require_with_error!(
+            &env,
+            token == profile.creator_token,
+            "token must match profile creator token"
+        );
 
         let rent_rate_bps = Self::get_rent_rate_bps(env.clone());
         require_with_error!(&env, rent_rate_bps > 0, "rent rate bps must be positive");
