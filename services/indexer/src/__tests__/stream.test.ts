@@ -145,6 +145,43 @@ describe("streamEvents — 429 backpressure", () => {
       )
     ).resolves.toBeUndefined();
   });
+
+  it("does not count serialization conflicts toward the stream circuit breaker", async () => {
+    const controller = new AbortController();
+    let fetchCalls = 0;
+    let processCalls = 0;
+    const fetchImpl = (async () => {
+      fetchCalls += 1;
+      return rpcResult(makeRawEvents(10, 1), 10) as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const process = async (events: RawEvent[]): Promise<number> => {
+      processCalls += 1;
+      if (processCalls <= 10) {
+        const error = new Error("serialization failure") as Error & { code: string };
+        error.code = "40001";
+        throw error;
+      }
+      controller.abort();
+      return events[events.length - 1].ledger;
+    };
+
+    await streamEvents(
+      {
+        rpcUrl: "http://rpc",
+        contractId: "C1",
+        startLedger: 10,
+        minPollMs: 0,
+        maxPollMs: 0,
+      },
+      process,
+      controller.signal,
+      { fetchImpl, sleep: async () => {}, rateLimiter: nonBlockingLimiter() }
+    );
+
+    expect(processCalls).toBe(11);
+    expect(fetchCalls).toBe(11);
+  });
 });
 
 describe("RpcError", () => {
@@ -173,10 +210,18 @@ describe("backfillStartupGap — 100-ledger gap recovery", () => {
     let fetchCalls = 0;
     const fetchImpl = (async (_url: string, opts: RequestInit) => {
       fetchCalls++;
-      const body = JSON.parse(opts.body as string) as { params?: { startLedger?: number; pagination?: { cursor?: string } } };
-      const startLedger = body.params?.startLedger ?? 0;
-      // Return events for the requested range (max 100 per page)
-      const page = gapEvents.filter((e) => e.ledger! >= startLedger);
+      const body = JSON.parse(opts.body as string) as {
+        params?: { startLedger?: number; pagination?: { cursor?: string } };
+      };
+      const cursor = body.params?.pagination?.cursor;
+      let page = gapEvents;
+      if (cursor) {
+        // Respect cursor-based pagination: only return events after it.
+        page = page.filter((e) => e.pagingToken! > cursor);
+      } else {
+        const startLedger = body.params?.startLedger ?? 0;
+        page = page.filter((e) => e.ledger! >= startLedger);
+      }
       return {
         ok: true,
         status: 200,

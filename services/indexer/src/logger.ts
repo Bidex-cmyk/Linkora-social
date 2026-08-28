@@ -4,7 +4,7 @@ import { Request, Response, NextFunction } from "express";
 
 // ── Logger setup ──────────────────────────────────────────────────────────────
 
-const isDev = process.env.NODE_ENV !== "production";
+const isDev = process.env.NODE_ENV !== "production" && process.env.NODE_ENV !== "test";
 
 const pinoLogger = pino({
   level: process.env.LOG_LEVEL || "info",

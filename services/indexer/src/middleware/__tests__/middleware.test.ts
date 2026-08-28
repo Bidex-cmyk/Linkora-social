@@ -74,6 +74,13 @@ describe("getClientIP & Trusted Proxy validation", () => {
   });
 });
 import { requireStellarAuth } from "../stellarAuth";
+import { jsonWithRawBody } from "../rawBody";
+import { buildAuthMessage, canonicalizeAuthPath } from "@linkora/types/src/auth";
+
+// Generous default timeout: this suite issues ~400 HTTP requests and is run
+// concurrently (via turbo) with the cargo test suite on 2-core CI runners, so
+// event-loop stalls can easily exceed Jest's 5s default.
+jest.setTimeout(30_000);
 
 // ── Mock @stellar/stellar-sdk to avoid ESM dep chain ─────────────────────────
 //
@@ -131,8 +138,30 @@ function generateTestKeypair(): TestKeypair {
 
 // ── Helper: build a valid Authorization header ────────────────────────────────
 
-function buildStellarAuthHeader(kp: TestKeypair, timestampMs: number): string {
-  const message = `${kp.address}:${timestampMs}`;
+interface SignedRequest {
+  /** HTTP method the credential is bound to. */
+  method?: string;
+  /** Path the credential is bound to, as the client would send it. */
+  path?: string;
+  /** Body the credential is bound to. `undefined` means "no body at all". */
+  body?: unknown;
+}
+
+function buildStellarAuthHeader(
+  kp: TestKeypair,
+  timestampMs: number,
+  { method = "POST", path = "/write", body = {} }: SignedRequest = {}
+): string {
+  // supertest serialises objects with JSON.stringify, so this reproduces the
+  // exact bytes the server will hash.
+  const rawBody = body === undefined ? "" : JSON.stringify(body);
+  const message = buildAuthMessage({
+    method,
+    canonicalPath: canonicalizeAuthPath(path),
+    address: kp.address,
+    timestamp: timestampMs,
+    bodyHash: createHash("sha256").update(rawBody).digest("hex"),
+  });
   const hash = createHash("sha256").update(message).digest();
   const sig = kp.sign(hash);
   const payload = JSON.stringify({
@@ -205,7 +234,7 @@ describe("rateLimitRead middleware (100 req/min per IP)", () => {
     const res = await request(app).get("/test").set(headers);
     expect(res.status).toBe(429);
     expect(res.headers["retry-after"]).toBeDefined();
-    expect(res.body.code).toBe("RATE_LIMIT_EXCEEDED");
+    expect(res.body.error.code).toBe("RATE_LIMITED");
   }, 30_000);
 
   it("burst of 110 requests: exactly 100 allowed and 10 rate-limited", async () => {
@@ -259,11 +288,15 @@ describe("requireStellarAuth middleware", () => {
     kp = generateTestKeypair();
 
     app = express();
-    app.use(express.json());
+    app.use(jsonWithRawBody());
     app.use(requestLoggingMiddleware);
-    app.post("/write", requireStellarAuth, rateLimitWrite, (req: Request, res: Response) => {
+    const handler = (req: Request, res: Response): void => {
       res.json({ ok: true, address: req.context?.stellarAddress });
-    });
+    };
+    app.post("/write", requireStellarAuth, rateLimitWrite, handler);
+    // A second endpoint, so a credential minted for /write can be replayed at it.
+    app.post("/other", requireStellarAuth, rateLimitWrite, handler);
+    app.put("/write", requireStellarAuth, rateLimitWrite, handler);
   });
 
   // ── Happy path ─────────────────────────────────────────────────────────────
@@ -288,14 +321,14 @@ describe("requireStellarAuth middleware", () => {
     const authHeader = buildStellarAuthHeader(kp, Date.now() - 60_000);
     const res = await request(app).post("/write").set("Authorization", authHeader).send({});
     expect(res.status).toBe(403);
-    expect(res.body.code).toBe("EXPIRED_TIMESTAMP");
+    expect(res.body.error.code).toBe("EXPIRED_TIMESTAMP");
   });
 
   it("rejects a 31-second-old timestamp (tolerance is 30s) → 403", async () => {
     const authHeader = buildStellarAuthHeader(kp, Date.now() - 31_000);
     const res = await request(app).post("/write").set("Authorization", authHeader).send({});
     expect(res.status).toBe(403);
-    expect(res.body.code).toBe("EXPIRED_TIMESTAMP");
+    expect(res.body.error.code).toBe("EXPIRED_TIMESTAMP");
   });
 
   it("accepts a timestamp within the 30s window → 200", async () => {
@@ -310,7 +343,13 @@ describe("requireStellarAuth middleware", () => {
     const now = Date.now();
     const otherKp = generateTestKeypair();
     // Sign with otherKp but claim to be kp
-    const message = `${kp.address}:${now}`;
+    const message = buildAuthMessage({
+      method: "POST",
+      canonicalPath: "/write",
+      address: kp.address,
+      timestamp: now,
+      bodyHash: createHash("sha256").update("{}").digest("hex"),
+    });
     const hash = createHash("sha256").update(message).digest();
     const badSig = otherKp.sign(hash).toString("base64");
     const payload = JSON.stringify({ address: kp.address, timestamp: now, signature: badSig });
@@ -318,7 +357,7 @@ describe("requireStellarAuth middleware", () => {
 
     const res = await request(app).post("/write").set("Authorization", authHeader).send({});
     expect(res.status).toBe(401);
-    expect(res.body.code).toBe("INVALID_SIGNATURE");
+    expect(res.body.error.code).toBe("INVALID_SIGNATURE");
   });
 
   it("rejects a garbage signature → 401 INVALID_SIGNATURE", async () => {
@@ -332,7 +371,7 @@ describe("requireStellarAuth middleware", () => {
 
     const res = await request(app).post("/write").set("Authorization", authHeader).send({});
     expect(res.status).toBe(401);
-    expect(res.body.code).toBe("INVALID_SIGNATURE");
+    expect(res.body.error.code).toBe("INVALID_SIGNATURE");
   });
 
   // ── Missing / malformed header → 400 ─────────────────────────────────────
@@ -340,14 +379,14 @@ describe("requireStellarAuth middleware", () => {
   it("returns 400 when Authorization header is missing", async () => {
     const res = await request(app).post("/write").send({});
     expect(res.status).toBe(400);
-    expect(res.body.code).toBe("INVALID_AUTH_HEADER");
-    expect(res.body.error).toBeDefined();
+    expect(res.body.error.code).toBe("INVALID_AUTH_HEADER");
+    expect(res.body.error.message).toBeDefined();
   });
 
   it("returns 400 for wrong scheme (Bearer)", async () => {
     const res = await request(app).post("/write").set("Authorization", "Bearer sometoken").send({});
     expect(res.status).toBe(400);
-    expect(res.body.code).toBe("INVALID_AUTH_HEADER");
+    expect(res.body.error.code).toBe("INVALID_AUTH_HEADER");
   });
 
   it("returns 400 for invalid base64 in StellarSig payload", async () => {
@@ -356,14 +395,133 @@ describe("requireStellarAuth middleware", () => {
       .set("Authorization", "StellarSig !!!not-base64!!!")
       .send({});
     expect(res.status).toBe(400);
-    expect(res.body.code).toBe("INVALID_AUTH_HEADER");
+    expect(res.body.error.code).toBe("INVALID_AUTH_HEADER");
+  });
+
+  // Freighter's `signBlob` is typed `Promise<string>` but resolves to a Buffer, which
+  // `JSON.stringify` renders as `{"type":"Buffer","data":[…]}`. The header must be rejected
+  // on shape before any verification runs — note that `Buffer.from(obj, "base64")` would
+  // happily recover the bytes, so the string check is the only thing standing here.
+  it("returns 400 when signature is a serialised Buffer rather than a base64 string", async () => {
+    const valid = buildStellarAuthHeader(kp, Date.now());
+    const payload = JSON.parse(Buffer.from(valid.split(" ")[1], "base64").toString("utf8"));
+    payload.signature = JSON.parse(JSON.stringify(Buffer.from(payload.signature, "base64")));
+    expect(payload.signature.type).toBe("Buffer");
+
+    const header = `StellarSig ${Buffer.from(JSON.stringify(payload)).toString("base64")}`;
+    const res = await request(app).post("/write").set("Authorization", header).send({});
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("INVALID_AUTH_HEADER");
+  });
+
+  it("returns 400 when signature is a number rather than a string", async () => {
+    const valid = buildStellarAuthHeader(kp, Date.now());
+    const payload = JSON.parse(Buffer.from(valid.split(" ")[1], "base64").toString("utf8"));
+    payload.signature = 12345;
+
+    const header = `StellarSig ${Buffer.from(JSON.stringify(payload)).toString("base64")}`;
+    const res = await request(app).post("/write").set("Authorization", header).send({});
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("INVALID_AUTH_HEADER");
   });
 
   it("returns 403 for a future timestamp (replay attack from future)", async () => {
     const authHeader = buildStellarAuthHeader(kp, Date.now() + 999_999);
     const res = await request(app).post("/write").set("Authorization", authHeader).send({});
     expect(res.status).toBe(403);
-    expect(res.body.code).toBe("INVALID_TIMESTAMP");
+    expect(res.body.error.code).toBe("INVALID_TIMESTAMP");
+  });
+
+  // ── Request binding / replay (issue #1171) ─────────────────────────────────
+  //
+  // The signature commits to method, path and body, so a captured credential
+  // only authorises the exact request it was minted for.
+
+  describe("request binding", () => {
+    it("accepts a credential replayed against the request it was minted for → 200", async () => {
+      const authHeader = buildStellarAuthHeader(kp, Date.now(), {
+        method: "POST",
+        path: "/write",
+        body: { hello: "world" },
+      });
+      const res = await request(app)
+        .post("/write")
+        .set("Authorization", authHeader)
+        .send({ hello: "world" });
+      expect(res.status).toBe(200);
+      expect(res.body.address).toBe(kp.address);
+    });
+
+    it("rejects a credential replayed against a different path → 401", async () => {
+      // Minted for /write, presented at /other within the tolerance window.
+      const authHeader = buildStellarAuthHeader(kp, Date.now(), { path: "/write" });
+      const res = await request(app).post("/other").set("Authorization", authHeader).send({});
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe("INVALID_SIGNATURE");
+    });
+
+    it("rejects a credential replayed with a different method → 401", async () => {
+      const authHeader = buildStellarAuthHeader(kp, Date.now(), { method: "POST" });
+      const res = await request(app).put("/write").set("Authorization", authHeader).send({});
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe("INVALID_SIGNATURE");
+    });
+
+    it("rejects a credential replayed with a tampered body → 401", async () => {
+      const authHeader = buildStellarAuthHeader(kp, Date.now(), {
+        body: { followee: "GVICTIM" },
+      });
+      const res = await request(app)
+        .post("/write")
+        .set("Authorization", authHeader)
+        .send({ followee: "GATTACKER" });
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe("INVALID_SIGNATURE");
+    });
+
+    it("rejects a credential replayed on the same path after the 30s window → 403", async () => {
+      const authHeader = buildStellarAuthHeader(kp, Date.now() - 31_000, { path: "/write" });
+      const res = await request(app).post("/write").set("Authorization", authHeader).send({});
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe("EXPIRED_TIMESTAMP");
+    });
+
+    it("ignores the query string when binding the path → 200", async () => {
+      const authHeader = buildStellarAuthHeader(kp, Date.now(), { path: "/write" });
+      const res = await request(app)
+        .post("/write?trace=1")
+        .set("Authorization", authHeader)
+        .send({});
+      expect(res.status).toBe(200);
+    });
+  });
+});
+
+// ── Signed message format ─────────────────────────────────────────────────────
+//
+// Pins the wire format itself: reordering or dropping a field has to fail here,
+// not just drift silently between signer and verifier.
+
+describe("buildAuthMessage", () => {
+  it("lays the message out as v1:METHOD:path:address:timestamp:bodyHash", () => {
+    expect(
+      buildAuthMessage({
+        method: "post",
+        canonicalPath: "/api/follows",
+        address: "GABC",
+        timestamp: 1700000000000,
+        bodyHash: "deadbeef",
+      })
+    ).toBe("v1:POST:/api/follows:GABC:1700000000000:deadbeef");
+  });
+
+  it("canonicalises paths by dropping the query string and trailing slash", () => {
+    expect(canonicalizeAuthPath("/api/follows?cursor=5")).toBe("/api/follows");
+    expect(canonicalizeAuthPath("/api/follows/")).toBe("/api/follows");
+    expect(canonicalizeAuthPath("/api/follows")).toBe("/api/follows");
+    expect(canonicalizeAuthPath("/")).toBe("/");
   });
 });
 

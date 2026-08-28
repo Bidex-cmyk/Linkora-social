@@ -74,6 +74,12 @@ export default function ProfilePage() {
     followingCount: state.status === "success" ? state.data.followingCount : 0,
   });
 
+  //  const followState_2 = useOptimisticFollow(currentUserAddress, address, {
+  //   isFollowing: state.status === "success" ? state.data.isFollowing : false,
+  //   followersCount: state.status === "success" ? state.data.followersCount : 0,
+  //   followingCount: state.status === "success" ? state.data.followingCount : 0,
+  // });
+
   /* ── Live event subscriptions ───────────────────────────────────────── */
 
   useWatchAddress(address);

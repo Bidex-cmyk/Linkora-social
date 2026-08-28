@@ -1,4 +1,5 @@
-import { scValToNative, xdr } from "@stellar/stellar-sdk";
+import { scValToNative, xdr } from "@stellar/stellar-base";
+import type { GovParameter } from "../generated/types.js";
 
 export interface SorobanEvent {
   type?: string;
@@ -23,15 +24,6 @@ export interface LinkoraEventMeta {
   txHash?: string;
   raw: SorobanEvent;
 }
-
-export type GovParameter =
-  | "FeeBps"
-  | "Treasury"
-  | "TipCooldownWindow"
-  | "GovQuorum"
-  | "GovTimeLock"
-  | "GovVoteWindow"
-  | string;
 
 interface BaseLinkoraEvent {
   meta: LinkoraEventMeta;
@@ -441,6 +433,29 @@ function strArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map(str) : [];
 }
 
+/**
+ * Parse a raw Soroban event into a strongly-typed LinkoraEvent.
+ *
+ * @param raw The raw event payload from the Soroban RPC.
+ * @returns The parsed LinkoraEvent, or null if the event type is unrecognized.
+ *
+ * @example
+ * ```ts
+ * const rawEvent = {
+ *   topics: [
+ *     "AAAAAQAAAANwb3N0", // "post"
+ *     "AAAAAQAAAAV1c2VyMQ==",
+ *   ],
+ *   data: "AAAAAQAAAAFjb250ZW50",
+ *   ledger: 1000,
+ * };
+ *
+ * const event = parseContractEvent(rawEvent);
+ * if (event?.type === "post_created") {
+ *   console.log(`Post created by: ${event.author}`);
+ * }
+ * ```
+ */
 export function parseContractEvent(raw: SorobanEvent): LinkoraEvent | null {
   try {
     const topics = decodeMany(raw.topics ?? raw.topic);
@@ -647,7 +662,7 @@ export function parseContractEvent(raw: SorobanEvent): LinkoraEvent | null {
           type: eventType,
           proposal_id: num(payload.proposal_id),
           proposer: str(payload.proposer),
-          parameter: str(payload.parameter),
+          parameter: str(payload.parameter) as GovParameter,
           new_value: num(payload.new_value),
           meta: eventMeta,
         };
@@ -663,7 +678,7 @@ export function parseContractEvent(raw: SorobanEvent): LinkoraEvent | null {
         return {
           type: eventType,
           proposal_id: num(payload.proposal_id),
-          parameter: str(payload.parameter),
+          parameter: str(payload.parameter) as GovParameter,
           new_value: num(payload.new_value),
           meta: eventMeta,
         };

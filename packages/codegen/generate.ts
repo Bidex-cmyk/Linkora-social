@@ -300,13 +300,15 @@ function generateClient(
   lines.push("  private contractId: string;");
   lines.push("  private rpcUrl: string;");
   lines.push("  private networkPassphrase: string;");
+  lines.push("  private allowHttp: boolean;");
   lines.push("");
   lines.push(
-    "  constructor(config: { contractId: string; rpcUrl: string; networkPassphrase?: string }) {"
+    "  constructor(config: { contractId: string; rpcUrl: string; networkPassphrase?: string; allowHttp?: boolean }) {"
   );
   lines.push("    this.contractId = config.contractId;");
   lines.push("    this.rpcUrl = config.rpcUrl;");
   lines.push("    this.networkPassphrase = config.networkPassphrase || DEFAULT_NETWORK;");
+  lines.push('    this.allowHttp = config.allowHttp ?? config.rpcUrl.startsWith("http://");');
   lines.push("  }");
   lines.push("");
 
@@ -314,7 +316,7 @@ function generateClient(
   lines.push(
     "  private async simulateCall(method: string, ...args: xdr.ScVal[]): Promise<xdr.ScVal | null> {"
   );
-  lines.push("    const server = new rpc.Server(this.rpcUrl);");
+  lines.push("    const server = new rpc.Server(this.rpcUrl, { allowHttp: this.allowHttp });");
   lines.push("    const contract = new Contract(this.contractId);");
   lines.push("    const op = contract.call(method, ...args);");
   lines.push("    const source = Keypair.random();");
@@ -371,7 +373,11 @@ function generateClient(
   const isReadName = (name: string) => READ_PREFIXES.some((p) => name.startsWith(p));
 
   const readMethods = functions.filter(
-    (f) => f.outputs.length > 0 && f.outputs[0].type !== "void" && isReadName(f.name) && !FORCE_WRITE.has(f.name)
+    (f) =>
+      f.outputs.length > 0 &&
+      f.outputs[0].type !== "void" &&
+      isReadName(f.name) &&
+      !FORCE_WRITE.has(f.name)
   );
   const writeMethods = functions.filter((f) => !readMethods.includes(f) || FORCE_WRITE.has(f.name));
 
@@ -633,7 +639,24 @@ function argToScVal(
 
 // ── Main ──────────────────────────────────────────────────────────────────
 
+function hasStellarCli(): boolean {
+  try {
+    execSync("command -v stellar", { stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function main() {
+  if (!hasStellarCli()) {
+    console.log(
+      "stellar-cli not installed; skipping Soroban spec codegen (generated bindings are committed).\n" +
+        "  Install with: cargo install --locked stellar-cli --version 27.1.0"
+    );
+    return;
+  }
+
   console.log("📦 Parsing contract ABI...");
   const { structs, enums, events, functions } = parseSpec();
 

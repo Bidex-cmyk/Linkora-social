@@ -1,11 +1,9 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { View, Text, TextInput, TouchableOpacity, FlatList, Alert, StyleSheet } from "react-native";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { useWalletContext } from "../../context/WalletContext";
 import { useToast } from "../../context/ToastContext";
-import { dm } from "linkora-sdk";
-const { DmService } = dm;
-import type { ConversationMessage } from "linkora-sdk";
+import { DmService, type ConversationMessage } from "../../utils/mockDm";
 import { EmptyState, ErrorState } from "../../components/states";
 
 export default function DirectMessageScreen() {
@@ -19,6 +17,10 @@ export default function DirectMessageScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dmService, setDmService] = useState<DmService | null>(null);
+
+  const [isTyping, setIsTyping] = useState(false);
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastTypingSentRef = useRef<number>(0);
 
   const loadMessagesForService = useCallback(
     async (service: DmService) => {
@@ -37,6 +39,15 @@ export default function DirectMessageScreen() {
     if (!dmService) return;
     await loadMessagesForService(dmService);
   }, [dmService, loadMessagesForService]);
+
+  // Clean up typing timeout
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+    };
+  }, []);
 
   // Initialize DM service and check if keys need to be generated
   useEffect(() => {
@@ -66,6 +77,18 @@ export default function DirectMessageScreen() {
                     await service.generateAndPublishKeys();
                     showToast({ kind: "success", title: "Encryption keys generated successfully" });
                     setDmService(service);
+                    service.connectRealTime();
+                    service.onRealTimeEvent((payload: Record<string, unknown>) => {
+                      if (payload.type === "new_message" && payload.sender === address) {
+                        loadMessagesForService(service);
+                      } else if (payload.type === "typing_status" && payload.sender === address) {
+                        setIsTyping(true);
+                        if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+                        typingTimeoutRef.current = setTimeout(() => {
+                          setIsTyping(false);
+                        }, 5000);
+                      }
+                    });
                   } catch (err) {
                     setError(`Failed to generate keys: ${err}`);
                   }
@@ -77,6 +100,18 @@ export default function DirectMessageScreen() {
         }
 
         setDmService(service);
+        service.connectRealTime();
+        service.onRealTimeEvent((payload: Record<string, unknown>) => {
+          if (payload.type === "new_message" && payload.sender === address) {
+            loadMessagesForService(service);
+          } else if (payload.type === "typing_status" && payload.sender === address) {
+            setIsTyping(true);
+            if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+            typingTimeoutRef.current = setTimeout(() => {
+              setIsTyping(false);
+            }, 5000);
+          }
+        });
         await loadMessagesForService(service);
       } catch (err) {
         setError(`Failed to initialize messaging: ${err}`);
@@ -104,6 +139,17 @@ export default function DirectMessageScreen() {
       setLoading(false);
     }
   }, [dmService, newMessage, address, loadMessages, showToast]);
+
+  const handleTextChange = (text: string) => {
+    setNewMessage(text);
+    if (!dmService || !address) return;
+
+    const now = Date.now();
+    if (now - lastTypingSentRef.current > 3000) {
+      dmService.sendTypingStatus(address);
+      lastTypingSentRef.current = now;
+    }
+  };
 
   const renderMessage = ({ item }: { item: ConversationMessage & { content: string } }) => {
     const isMyMessage = item.sender === wallet?.address;
@@ -142,6 +188,12 @@ export default function DirectMessageScreen() {
         <Text style={styles.addressText}>{address?.slice(0, 8)}...</Text>
       </View>
 
+      {isTyping && (
+        <View style={styles.typingIndicatorHeader}>
+          <Text style={styles.typingTextHeader}>{address?.slice(0, 8)}... is typing...</Text>
+        </View>
+      )}
+
       <View style={styles.messagesContainer}>
         {messages.length === 0 ? (
           <EmptyState
@@ -164,7 +216,7 @@ export default function DirectMessageScreen() {
         <TextInput
           style={styles.textInput}
           value={newMessage}
-          onChangeText={setNewMessage}
+          onChangeText={handleTextChange}
           placeholder="Type a message..."
           multiline
           maxLength={500}
@@ -211,6 +263,18 @@ const styles = StyleSheet.create({
   addressText: {
     fontSize: 14,
     color: "#65676b",
+  },
+  typingIndicatorHeader: {
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    backgroundColor: "#f8f9fa",
+    borderBottomWidth: 1,
+    borderBottomColor: "#e1e5e9",
+  },
+  typingTextHeader: {
+    fontSize: 12,
+    color: "#65676b",
+    fontStyle: "italic",
   },
   messagesContainer: {
     flex: 1,

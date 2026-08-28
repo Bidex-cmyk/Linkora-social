@@ -35,6 +35,9 @@ export class PostgresDatabase implements Database {
     );
   }
 
+  async deleteProfile(address: string): Promise<void> {
+    await this.pool.query(`DELETE FROM profiles WHERE address = $1`, [address]);
+  }
   async getProfile(address: string): Promise<Profile | null> {
     const res = await this.pool.query(
       `
@@ -533,6 +536,68 @@ export class PostgresDatabase implements Database {
       threshold: Number(row.threshold),
       created_ledger: Number(row.created_ledger),
       updated_ledger: Number(row.updated_ledger),
+    };
+  }
+
+  async listPools(): Promise<PoolModel[]> {
+    const res = await this.pool.query(
+      `
+      SELECT pool_id, token, balance, admins, threshold, created_ledger, updated_ledger
+      FROM pools
+      ORDER BY created_ledger DESC
+      `
+    );
+    return res.rows.map((row) => ({
+      pool_id: row.pool_id,
+      token: row.token,
+      balance: BigInt(row.balance),
+      admins: row.admins ?? [],
+      threshold: Number(row.threshold),
+      created_ledger: Number(row.created_ledger),
+      updated_ledger: Number(row.updated_ledger),
+    }));
+  }
+
+  async getPoolAnalytics(pool_id: string): Promise<import("./db").PoolAnalytics> {
+    const eventsRes = await this.pool.query(
+      `
+      SELECT
+        type,
+        address,
+        amount,
+        ledger,
+        created_at
+      FROM pool_events
+      WHERE pool_id = $1
+      ORDER BY ledger DESC
+      LIMIT 50
+      `,
+      [pool_id]
+    );
+
+    const events = eventsRes.rows.map((row) => ({
+      type: row.type as "deposit" | "withdraw",
+      address: row.address,
+      amount: String(row.amount),
+      ledger: Number(row.ledger),
+      timestamp: row.created_at?.toISOString?.() ?? "",
+    }));
+
+    const deposits = events.filter((e) => e.type === "deposit");
+    const withdrawals = events.filter((e) => e.type === "withdraw");
+
+    const totalDeposited = deposits.reduce((sum, e) => sum + BigInt(e.amount), BigInt(0));
+    const totalWithdrawn = withdrawals.reduce((sum, e) => sum + BigInt(e.amount), BigInt(0));
+
+    const uniqueContributors = new Set(events.map((e) => e.address));
+
+    return {
+      total_deposited: totalDeposited.toString(),
+      total_withdrawn: totalWithdrawn.toString(),
+      contributor_count: uniqueContributors.size,
+      recent_events: events.slice(0, 20),
+      volume_7d: totalDeposited.toString(),
+      volume_30d: totalDeposited.toString(),
     };
   }
 

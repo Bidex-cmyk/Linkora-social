@@ -10,11 +10,11 @@
  */
 
 // ---------------------------------------------------------------------------
-// Mock @stellar/stellar-sdk
+// Mock @stellar/stellar-base
 // Our test fixtures encode values as { __native: <value> } serialised to base64.
 // The mock scValToNative simply unwraps that envelope, and fromXDR deserialises it.
 // ---------------------------------------------------------------------------
-jest.mock("@stellar/stellar-sdk", () => ({
+jest.mock("@stellar/stellar-base", () => ({
   scValToNative: (scv: unknown) => {
     if (scv && typeof scv === "object" && "__native" in (scv as object)) {
       return (scv as { __native: unknown }).__native;
@@ -996,6 +996,60 @@ describe("CursorStore backends", () => {
       expect(typeof store.get).toBe("function");
       expect(typeof store.set).toBe("function");
       expect(typeof store.clear).toBe("function");
+    });
+  });
+
+  describe("destroy()", () => {
+    let savedFetch: typeof globalThis.fetch;
+    beforeEach(() => {
+      savedFetch = globalThis.fetch;
+    });
+    afterEach(() => {
+      globalThis.fetch = savedFetch;
+    });
+
+    it("stops polling and clears all handlers", async () => {
+      const event = rawEvent({
+        id: "evt-d1",
+        pagingToken: "cursor-destroy-1",
+        topics: [enc("follow")],
+        data: enc({ follower: "GA", followee: "GB" }),
+      });
+      globalThis.fetch = rpcResponses([[event]]) as unknown as typeof fetch;
+
+      const sub = makeSub();
+      const handler = jest.fn();
+      sub.subscribe({ follow: handler });
+
+      await driveCycles(sub, 1);
+      expect(handler).toHaveBeenCalledTimes(1);
+
+      await sub.destroy();
+
+      // After destroy, handler should not be called
+      jest.clearAllMocks();
+      globalThis.fetch = rpcResponses([[event]]) as unknown as typeof fetch;
+
+      await driveCycles(sub, 1);
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it("resets cursor and poll interval on destroy", async () => {
+      globalThis.fetch = rpcResponses([[]]) as unknown as typeof fetch;
+      const cursorStore = new MemoryCursorStore();
+      const sub = makeSub({}, cursorStore);
+
+      await sub.start();
+      await sub.stop();
+      expect(await cursorStore.get()).toBeUndefined();
+
+      await sub.destroy();
+      expect(await cursorStore.get()).toBeUndefined();
+    });
+
+    it("allows cleanup without active event loop", async () => {
+      const sub = makeSub();
+      await expect(sub.destroy()).resolves.not.toThrow();
     });
   });
 });

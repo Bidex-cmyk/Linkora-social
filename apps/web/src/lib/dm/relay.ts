@@ -120,3 +120,42 @@ export async function fetchRelayMessages(
   const data: { messages: RelayMessage[]; has_more: boolean } = await res.json();
   return data.messages ?? [];
 }
+
+// ── WebSocket & Typing Indicator ──────────────────────────────────────────────
+
+let ws: WebSocket | null = null;
+const messageListeners = new Set<(payload: any) => void>();
+
+export function connectRelayWs(address: string) {
+  if (ws) return;
+  const wsUrl = RELAY_URL.replace(/^http/, "ws") + `/ws?address=${address}`;
+  ws = new WebSocket(wsUrl);
+  
+  ws.onmessage = (event) => {
+    try {
+      const payload = JSON.parse(event.data);
+      messageListeners.forEach((listener) => listener(payload));
+    } catch (e) {}
+  };
+  
+  ws.onclose = () => {
+    ws = null;
+  };
+}
+
+export function onRelayMessage(listener: (payload: any) => void) {
+  messageListeners.add(listener);
+  return () => {
+    messageListeners.delete(listener);
+  };
+}
+
+export function sendTypingStatus(recipient: string) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: "typing_status",
+      recipient
+    }));
+  }
+}
+

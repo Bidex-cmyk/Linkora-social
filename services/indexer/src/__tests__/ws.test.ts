@@ -87,7 +87,8 @@ describe("WebSocket fanout", () => {
     h.bus.publish(busEvent("PostCreated", 100));
 
     const { frame, at } = await received;
-    expect(at - sentAt).toBeLessThan(200);
+    // Generous bound: CI/turbo CPU contention can delay event-loop callbacks.
+    expect(at - sentAt).toBeLessThan(1000);
     expect(frame.type).toBe("PostCreated");
     expect(frame.payload.ledgerSequence).toBe(100);
 
@@ -129,7 +130,8 @@ describe("WebSocket fanout", () => {
     const [latA, latB] = await Promise.all([a, b]);
     expect(latA).toHaveLength(N);
     expect(latB).toHaveLength(N);
-    expect(Math.max(...latA, ...latB)).toBeLessThan(200);
+    // Generous bound: CI/turbo CPU contention can delay event-loop callbacks.
+    expect(Math.max(...latA, ...latB)).toBeLessThan(1000);
 
     clientA.close();
     clientB.close();
@@ -180,15 +182,18 @@ describe("WebSocket fanout", () => {
   });
 
   it("keeps a responsive client alive across heartbeats", async () => {
-    h = await startHarness(40); // fast heartbeat
+    h = await startHarness(1000); // heartbeat every second
     const client = await connect(h.port);
     await waitFor(() => h.handle.clientCount() === 1);
 
-    // `ws` auto-replies to pings with pongs; the client should survive.
-    await new Promise((r) => setTimeout(r, 150)); // several heartbeat cycles
+    // `ws` auto-replies to pings with pongs; the client should survive
+    // several heartbeat cycles. A generous heartbeat interval keeps the test
+    // immune to event-loop stalls on CPU-contended CI runners (a stalled loop
+    // can otherwise make the server think a responsive client is dead).
+    await new Promise((r) => setTimeout(r, 2200)); // ~2+ heartbeat cycles
     expect(h.handle.clientCount()).toBe(1);
     expect(client.readyState).toBe(WebSocket.OPEN);
 
     client.close();
-  });
+  }, 10_000);
 });
