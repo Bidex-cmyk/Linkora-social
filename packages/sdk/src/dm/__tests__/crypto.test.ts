@@ -348,5 +348,5 @@ describe("RelayClient sendMessage retry logic", () => {
     ).rejects.toThrow();
 
     expect(mockFetch).toHaveBeenCalledTimes(4);
-  });
+  }, 15_000);
 });

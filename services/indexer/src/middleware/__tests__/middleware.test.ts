@@ -284,7 +284,7 @@ describe("rateLimitRead middleware (100 req/min per IP)", () => {
     // With one trusted proxy hop, the client-supplied portion of the header
     // is everything except the rightmost entry (the address our own proxy
     // observed). Rotating the spoofed prefix must not grant a fresh budget.
-    const realClientIp = "10.0.0.9";
+    const realClientIp = "203.0.113.195";
     for (let i = 0; i < 100; i++) {
       const res = await request(app)
         .get("/test")
@@ -294,19 +294,19 @@ describe("rateLimitRead middleware (100 req/min per IP)", () => {
 
     const spoofed = await request(app)
       .get("/test")
-      .set("x-forwarded-for", `203.0.113.${Math.floor(Math.random() * 254) + 1}, ${realClientIp}`);
+      .set("x-forwarded-for", `198.51.100.${Math.floor(Math.random() * 254) + 1}, ${realClientIp}`);
     expect(spoofed.status).toBe(429);
   }, 30_000);
 
   it("still isolates genuinely different clients behind the trusted proxy", async () => {
     for (let i = 0; i < 100; i++) {
-      await request(app).get("/test").set("x-forwarded-for", "1.2.3.4, 10.0.0.10");
+      await request(app).get("/test").set("x-forwarded-for", "1.2.3.4, 203.0.113.10");
     }
     expect(
-      (await request(app).get("/test").set("x-forwarded-for", "1.2.3.4, 10.0.0.10")).status
+      (await request(app).get("/test").set("x-forwarded-for", "1.2.3.4, 203.0.113.10")).status
     ).toBe(429);
     expect(
-      (await request(app).get("/test").set("x-forwarded-for", "1.2.3.4, 10.0.0.11")).status
+      (await request(app).get("/test").set("x-forwarded-for", "1.2.3.4, 203.0.113.11")).status
     ).toBe(200);
   }, 30_000);
 });
