@@ -207,7 +207,9 @@ export class RelayClient {
     senderKeypair: Keypair,
     recipient: string,
     ciphertext: Uint8Array,
-    messageIndex: number
+    messageIndex: number,
+    retryCount: number = 0,
+    maxRetries: number = 3
   ): Promise<void> {
     const timestamp = Math.floor(Date.now() / 1000);
     const signature = this.createAuthSignature(senderKeypair, timestamp);
@@ -222,27 +224,49 @@ export class RelayClient {
       signature,
     };
 
-    const response = await fetchWithTimeout(
-      `${this.baseUrl}/messages`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
+    try {
+      const response = await fetchWithTimeout(
+        `${this.baseUrl}/messages`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(request),
         },
-        body: JSON.stringify(request),
-      },
-      this.timeoutMs
-    );
+        this.timeoutMs
+      );
 
-    if (!response.ok) {
-      const error = await response.text();
-      if (response.status === 401) {
-        throw new RelayAuthError(`Authentication failed: ${error}`);
+      if (!response.ok) {
+        const error = await response.text();
+        if (response.status === 401 || response.status === 403) {
+          throw new RelayAuthError(`Authentication failed: ${error}`);
+        }
+        if (response.status >= 400 && response.status < 500) {
+          throw new Error(`Relay request rejected (non-retryable): ${response.status} ${error}`);
+        }
+        throw new Error(`Relay request failed: ${response.status} ${error}`);
       }
-      if (response.status === 403) {
-        throw new RelayAuthError(`Request rejected: ${error}`);
+    } catch (error) {
+      if (error instanceof RelayAuthError) {
+        throw error;
       }
-      throw new Error(`Relay request failed: ${response.status} ${error}`);
+      if (error instanceof Error && error.message.includes("non-retryable")) {
+        throw error;
+      }
+      if (retryCount < maxRetries) {
+        const delay = Math.min(1000 * Math.pow(2, retryCount), 30000);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        return this.sendMessage(
+          senderKeypair,
+          recipient,
+          ciphertext,
+          messageIndex,
+          retryCount + 1,
+          maxRetries
+        );
+      }
+      throw error;
     }
   }
 
