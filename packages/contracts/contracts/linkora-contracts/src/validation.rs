@@ -198,3 +198,9 @@ pub fn validate_report_verdict(env: &Env, verdict: &ReportStatus) {
         "verdict must be upheld or dismissed"
     );
 }
+
+/// Rejects a report where the reporter is also the post author, preventing
+/// self-reporting from being used to bury one's own content.
+pub fn validate_reporter_can_report(env: &Env, reporter: &Address, author: &Address) {
+    require_with_error!(env, reporter != author, "cannot report own post");
+}
