@@ -14,8 +14,8 @@ export class InstrumentedPool extends Pool {
     this.slowQueryThresholdMs = slowQueryThresholdMs;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  override query<R extends any = any, I extends any[] = any[]>(...args: any[]): any {
+  /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars, @typescript-eslint/no-unnecessary-type-constraint */
+  override query<R = any, I = any[]>(...args: any[]): any {
     const start = Date.now();
     const queryTextOrConfig = args[0];
     const sqlSnippet =
@@ -23,11 +23,9 @@ export class InstrumentedPool extends Pool {
         ? queryTextOrConfig.slice(0, 120)
         : "(prepared)";
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const res = (super.query as any)(...args);
       if (res && typeof res.then === "function") {
         return res
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           .then((result: any) => {
             const dur = Date.now() - start;
             if (dur > this.slowQueryThresholdMs) {
@@ -35,7 +33,6 @@ export class InstrumentedPool extends Pool {
             }
             return result;
           })
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           .catch((err: any) => {
             const dur = Date.now() - start;
             logger.error({ dur, sql: sqlSnippet, err }, "query-error");
@@ -49,4 +46,5 @@ export class InstrumentedPool extends Pool {
       throw err;
     }
   }
+  /* eslint-enable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars, @typescript-eslint/no-unnecessary-type-constraint */
 }
