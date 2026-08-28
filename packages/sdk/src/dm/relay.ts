@@ -222,13 +222,17 @@ export class RelayClient {
       signature,
     };
 
-    const response = await fetchWithTimeout(`${this.baseUrl}/messages`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
+    const response = await fetchWithTimeout(
+      `${this.baseUrl}/messages`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(request),
       },
-      body: JSON.stringify(request),
-    }, this.timeoutMs);
+      this.timeoutMs
+    );
 
     if (!response.ok) {
       const error = await response.text();
@@ -259,7 +263,11 @@ export class RelayClient {
       params.set("cursor", cursor);
     }
 
-    const response = await fetchWithTimeout(`${this.baseUrl}/messages/${conversationId}?${params}`, undefined, this.timeoutMs);
+    const response = await fetchWithTimeout(
+      `${this.baseUrl}/messages/${conversationId}?${params}`,
+      undefined,
+      this.timeoutMs
+    );
 
     if (!response.ok) {
       throw new Error(`Failed to fetch messages: ${response.status}`);
@@ -301,4 +309,47 @@ export function getConversationId(addressA: string, addressB: string): string {
   const sorted = [addressA, addressB].sort();
   const combined = sorted[0] + sorted[1];
   return Buffer.from(sha256(new TextEncoder().encode(combined))).toString("hex");
+}
+
+// ── Key rotation detection ───────────────────────────────────────────────────
+
+export interface KeyRotationResult {
+  /** `true` when the on-chain key differs from the cached key. */
+  rotated: boolean;
+  /** The current on-chain key (always present when `onChainKey` was provided). */
+  currentKey: Uint8Array;
+}
+
+/**
+ * Compare an on-chain X25519 public key against a previously-cached key.
+ *
+ * This is a pure comparison helper – it does **not** touch any storage.
+ * The caller is responsible for:
+ *  1. Persisting the on-chain key after a successful comparison.
+ *  2. Invalidating any cached session keys when `rotated` is `true`.
+ *  3. Resetting the sync cursor so messages under the new key are fetched.
+ *
+ * @param cachedKey  The previously-cached public key, or `null` on first sync.
+ * @param onChainKey The current key fetched from the contract.
+ * @returns A `KeyRotationResult` indicating whether a rotation occurred.
+ */
+export function detectKeyRotation(
+  cachedKey: Uint8Array | null,
+  onChainKey: Uint8Array
+): KeyRotationResult {
+  if (!cachedKey) {
+    return { rotated: false, currentKey: onChainKey };
+  }
+
+  if (cachedKey.length !== onChainKey.length) {
+    return { rotated: true, currentKey: onChainKey };
+  }
+
+  for (let i = 0; i < cachedKey.length; i++) {
+    if (cachedKey[i] !== onChainKey[i]) {
+      return { rotated: true, currentKey: onChainKey };
+    }
+  }
+
+  return { rotated: false, currentKey: onChainKey };
 }
